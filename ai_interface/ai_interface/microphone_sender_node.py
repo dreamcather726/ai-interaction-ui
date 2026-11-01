@@ -16,7 +16,7 @@ from std_srvs.srv import Trigger
 
 
 class MicrophoneSenderNode(Node):
-    """Provide recording controls using the same interface as the simulator."""
+    """Provide start/stop controls for real microphone capture."""
 
     def __init__(self):
         super().__init__('microphone_sender_node')

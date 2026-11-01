@@ -30,7 +30,7 @@ ros2 interface show robot_interfaces/action/ExecuteTask
 
 ### 接收香橙派音频
 
-香橙派或下面的模拟程序启动后，可直接请求开始／停止录音（当前接收节点仅负责订阅与保存，不提供控制转发入口）：
+真实麦克风发送节点启动后，可直接请求开始／停止录音（当前接收节点仅负责订阅与保存，不提供控制转发入口）：
 
 ```bash
 ros2 service call /audio/start_recording std_srvs/srv/Trigger "{}"
@@ -64,40 +64,9 @@ ros2 topic echo /ai/request_status robot_interfaces/msg/RequestStatus
 
 2026-11-01 已在 WSL Ubuntu-22.04 / Humble 构建通过，并用本地 ROS 发布／订阅验证 1 秒合成 PCM 的 WAV 保存、关联回执、错误格式拒绝及错误后的继续接收；临时测试音频已清理。尚未验证香橙派跨设备 DDS 网络或真实麦克风音频。
 
-### 模拟香橙派音频输出
-
-测试程序：`ai_interface/ai_interface/audio_simulator_node.py`，仅用 Python 标准库生成 440 Hz 提示音，无需麦克风或额外音频依赖。这是测试音，不包含语音，不能用来验收 ASR 识别文字。请先重新构建 `ai_interface`，各终端均加载 ROS 2 和工作空间环境。
-
-终端一运行上述接收节点；终端二运行：
-
-```bash
-ros2 run ai_interface audio_simulator_node
-```
-
-程序等待发现 `/audio/segments` 订阅者后，自动发送一次 1 秒的 PCM 测试音，并继续运行以提供控制服务。接收端日志会显示保存路径，生成 16 kHz、单声道、16 位 WAV。通过回执确认接收是否成功；模拟端打印 Sent 仅表示已发布。
-
-可调整自动发送片段的时长与音调：
-
-```bash
-ros2 run ai_interface audio_simulator_node --ros-args -p duration:=2.0 -p frequency:=880.0
-```
-
-测试开始／停止录音时，关闭自动发送：
-
-```bash
-ros2 run ai_interface audio_simulator_node --ros-args -p auto_send:=false
-# 在另一个已加载环境的终端执行，开始后等待一两秒再停止：
-ros2 service call /audio/start_recording std_srvs/srv/Trigger "{}"
-ros2 service call /audio/stop_recording std_srvs/srv/Trigger "{}"
-```
-
-手动模式按两次调用的间隔生成同等时长测试音，最长 10 秒时自动结束。重复开始不重置计时，重复停止不重复发送；无接收者时停止返回失败，达到上限则丢弃该段。自动模式 duration 范围 0.05～10 秒；frequency 范围 [20,8000) Hz。每个片段自动填写唯一请求／片段 ID 和有效的会话／上下文／采集时间。模拟 ID 仅用于链路测试，不能作为真实任务的授权上下文。运行模拟器时不要同时启动使用相同服务名称的真实香橙派节点。
-
-2026-11-01 已在 Humble 构建并通过本地 ROS 收发验证：自动单次输出、非静音 WAV 的格式与帧数、开始／停止、重复调用、不同片段 ID 和十秒上限；测试音频在临时目录验证后清理。测试未使用香橙派或真实麦克风。
-
 ### 使用 WSL 的真实麦克风
 
-`microphone_sender_node.py` 使用已验证可用的 `parecord`，无需安装 sounddevice。系统依赖为 `pulseaudio-utils`。程序以 `--raw --format=s16le --rate=16000 --channels=1` 从麦克风读取原始 PCM，停止后沿用 `/audio/segments` 发送；不把 WAV 文件头当作 PCM。请先退出模拟器，避免两个节点提供同名录音控制服务。
+`microphone_sender_node.py` 使用已验证可用的 `parecord`，无需安装 sounddevice。系统依赖为 `pulseaudio-utils`。程序以 `--raw --format=s16le --rate=16000 --channels=1` 从麦克风读取原始 PCM，停止后沿用 `/audio/segments` 发送；不把 WAV 文件头当作 PCM。
 
 先更新并在 WSL 工作空间构建（沿用普通安装方式）：
 

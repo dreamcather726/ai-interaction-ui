@@ -20,7 +20,6 @@ setup(
     entry_points={
         'console_scripts': [
             'audio_receiver_node = ai_interface.audio_receiver_node:main',
-            'audio_simulator_node = ai_interface.audio_simulator_node:main',
             'microphone_sender_node = ai_interface.microphone_sender_node:main',
         ],
     },
