@@ -94,3 +94,47 @@ ros2 service call /audio/stop_recording std_srvs/srv/Trigger "{}"
 手动模式按两次调用的间隔生成同等时长测试音，最长 10 秒时自动结束。重复开始不重置计时，重复停止不重复发送；无接收者时停止返回失败，达到上限则丢弃该段。自动模式 duration 范围 0.05～10 秒；frequency 范围 [20,8000) Hz。每个片段自动填写唯一请求／片段 ID 和有效的会话／上下文／采集时间。模拟 ID 仅用于链路测试，不能作为真实任务的授权上下文。运行模拟器时不要同时启动使用相同服务名称的真实香橙派节点。
 
 2026-11-01 已在 Humble 构建并通过本地 ROS 收发验证：自动单次输出、非静音 WAV 的格式与帧数、开始／停止、重复调用、不同片段 ID 和十秒上限；测试音频在临时目录验证后清理。测试未使用香橙派或真实麦克风。
+
+### 使用 WSL 的真实麦克风
+
+`microphone_sender_node.py` 使用已验证可用的 `parecord`，无需安装 sounddevice。系统依赖为 `pulseaudio-utils`。程序以 `--raw --format=s16le --rate=16000 --channels=1` 从麦克风读取原始 PCM，停止后沿用 `/audio/segments` 发送；不把 WAV 文件头当作 PCM。请先退出模拟器，避免两个节点提供同名录音控制服务。
+
+先更新并在 WSL 工作空间构建（沿用普通安装方式）：
+
+```bash
+cd ~/ai_interaction_ws/src
+git pull --ff-only origin main
+cd ~/ai_interaction_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to ai_interface --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
+source install/setup.bash
+```
+
+三个终端均先加载 Humble 和工作空间环境。终端一运行接收节点，终端二运行真实麦克风发送节点：
+
+```bash
+# 终端一
+ros2 run ai_interface audio_receiver_node
+# 终端二
+ros2 run ai_interface microphone_sender_node
+```
+
+终端三开始录音，说完后停止并发送：
+
+```bash
+ros2 service call /audio/start_recording std_srvs/srv/Trigger "{}"
+ros2 service call /audio/stop_recording std_srvs/srv/Trigger "{}"
+```
+
+默认使用 `@DEFAULT_SOURCE@`。可查看设备并指定名称：
+
+```bash
+pactl list short sources
+ros2 run ai_interface microphone_sender_node --ros-args -p device:=RDPSource
+```
+
+开始回执成功只表示 parecord 进程已启动，设备初始化失败由节点日志报告。停止回执成功表示真实音频已发布；接收落盘仍查看 `/ai/request_status`。采集最多 10 秒／320000 字节，后台持续读取管道，达到上限自动停止并发送。停止总会终止采集：没有接收者或无音频时返回失败并丢弃，不伪造结果；重复停止不重发，节点退出会停止采集并丢弃未发送数据。尚未使用会话管理时默认生成 mic-session／mic-context 标识，仅用于独立录音链路测试；接入任务系统后用 session_id、input_context_id 参数传入当前有效上下文。
+
+采集起止时间按停止时 ROS 时钟及实际帧数推算，不是硬件采样时间戳，可能包含设备缓冲／停止延迟；不可用作精确传感器同步。说话前可等待设备初始化，开始后立即停止可能尚未得到数据。
+
+2026-11-01 已在 WSL 默认 RDPSource 实际调用 parecord 约 2 秒，收到 53100 字节非全零 PCM，ROS 接收端保存 WAV 后与原 PCM 完全一致（16000 Hz、单声道、16 位）。重复开始／停止、无效设备不生成假音频也已验证；临时录音已清理。未试听或验收 ASR，未验证香橙派硬件。
