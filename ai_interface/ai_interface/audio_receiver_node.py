@@ -10,6 +10,7 @@ import rclpy
 from rclpy.node import Node
 
 from robot_interfaces.msg import AudioSegment, RequestStatus
+from ai_interface.audio_pipeline import AudioPipeline
 
 
 class AudioReceiverNode(Node):
@@ -21,7 +22,7 @@ class AudioReceiverNode(Node):
         self.declare_parameter('output_dir', 'received_audio')
         self.output_dir = Path(
             self.get_parameter('output_dir').value
-        )
+        ).expanduser().resolve()
 
         # 发布接收结果
         self.receipt_pub = self.create_publisher(
@@ -38,7 +39,8 @@ class AudioReceiverNode(Node):
             10
         )
 
-        self.get_logger().info('音频接收节点已启动')
+        self.pipeline = AudioPipeline(self)
+        self.get_logger().info('音频接收节点已启动：保存后自动请求 ASR，再进行语义解析')
 
     # 检查音频数据
     def validate_audio(self, msg):
@@ -63,8 +65,17 @@ class AudioReceiverNode(Node):
         if len(pcm) % 2 != 0:
             raise ValueError('PCM数据长度错误')
 
-        if not msg.request_id or not msg.segment_id:
-            raise ValueError('音频请求ID不能为空')
+        if not all(value.strip() for value in (
+                msg.request_id, msg.segment_id, msg.session_id, msg.input_context_id)):
+            raise ValueError('音频请求、片段、会话和上下文ID不能为空')
+        stamps = (msg.capture_started_at, msg.capture_ended_at, msg.stamp)
+        if any(t.sec < 0 or not 0 <= t.nanosec < 10**9 for t in stamps):
+            raise ValueError('音频时间戳非法')
+        start, end, sent = (t.sec * 10**9 + t.nanosec for t in stamps)
+        if not 0 < start < end <= sent or end - start > 10**10:
+            raise ValueError('录音起止时间无效或超过10秒')
+        if abs((end - start) / 10**9 - len(pcm) / 32000) > 0.05:
+            raise ValueError('录音时长与音频帧数不一致')
 
         return pcm
 
@@ -130,6 +141,8 @@ class AudioReceiverNode(Node):
         result.stamp = self.get_clock().now().to_msg()
 
         self.receipt_pub.publish(result)
+        if result.success:
+            self.pipeline.enqueue(msg, file_path)
 
 
 def main(args=None):
@@ -144,8 +157,10 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
 
+    node.pipeline.close()
     node.destroy_node()
-    rclpy.shutdown()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':

@@ -40,6 +40,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/CancelTask.srv"
   "srv/SetEmergencyStop.srv"
   "srv/ResetEmergencyStop.srv"
+  "srv/RecognizeAudio.srv"
   "action/ParseTask.action"
   "action/ExecuteTask.action"
   "action/Speak.action"

@@ -1,0 +1,12 @@
+# Absolute path on a filesystem shared by the PC interface and AI nodes.
+builtin_interfaces/Time stamp
+string request_id
+string session_id
+string segment_id
+string input_context_id
+builtin_interfaces/Time capture_started_at
+builtin_interfaces/Time capture_ended_at
+string audio_path
+---
+# Reuse the complete ASR result, including IDs, status and error details.
+robot_interfaces/RecognizedText result
