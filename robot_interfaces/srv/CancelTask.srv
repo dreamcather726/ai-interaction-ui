@@ -1,0 +1,12 @@
+builtin_interfaces/Time stamp
+string request_id
+string task_id
+string reason
+---
+builtin_interfaces/Time stamp
+string request_id
+# Success means cancellation accepted, not that the robot has stopped.
+bool success
+string message
+string error_code
+string task_id

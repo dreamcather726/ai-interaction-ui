@@ -1,0 +1,24 @@
+builtin_interfaces/Time stamp
+string request_id
+string task_id
+uint32 revision
+string dispatch_id
+string session_id
+string input_context_id
+builtin_interfaces/Time confirmed_at
+---
+builtin_interfaces/Time stamp
+string request_id
+string task_id
+string dispatch_id
+bool success
+string message
+string error_code
+robot_interfaces/TaskSnapshot task
+---
+builtin_interfaces/Time stamp
+string request_id
+string task_id
+string dispatch_id
+robot_interfaces/TaskSnapshot task
+string message

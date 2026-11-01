@@ -1,0 +1,36 @@
+builtin_interfaces/Time stamp
+string request_id
+string session_id
+string input_id
+string input_context_id
+string<=4096 text
+robot_interfaces/DialogueTurn[<=20] context
+robot_interfaces/TaskCandidate partial_candidate
+string[] allowed_station_ids
+string[] allowed_object_ids
+---
+builtin_interfaces/Time stamp
+string request_id
+string session_id
+string input_id
+string input_context_id
+# True only when outcome is READY.
+bool success
+string message
+string error_code
+uint8 READY=0
+uint8 NEED_CLARIFICATION=1
+uint8 UNSUPPORTED=2
+uint8 FAILED=3
+uint8 outcome
+robot_interfaces/TaskCandidate candidate
+string[] missing_fields
+string clarification_question
+---
+builtin_interfaces/Time stamp
+string request_id
+uint8 QUEUED=0
+uint8 INFERENCING=1
+uint8 VALIDATING=2
+uint8 stage
+string message

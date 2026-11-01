@@ -1,0 +1,19 @@
+builtin_interfaces/Time stamp
+string request_id
+uint32 sample_rate
+uint8 channels
+string encoding
+uint8[<=320000] data
+---
+builtin_interfaces/Time stamp
+string request_id
+bool success
+string message
+string error_code
+---
+builtin_interfaces/Time stamp
+string request_id
+uint8 QUEUED=0
+uint8 PLAYING=1
+uint8 stage
+string message

@@ -1,0 +1,15 @@
+builtin_interfaces/Time stamp
+string request_id
+string task_id
+string dispatch_id
+---
+builtin_interfaces/Time stamp
+string request_id
+# Success means all explicitly requested records were found.
+bool success
+string message
+string error_code
+bool task_found
+robot_interfaces/TaskSnapshot task
+bool dispatch_found
+robot_interfaces/DispatchReport dispatch

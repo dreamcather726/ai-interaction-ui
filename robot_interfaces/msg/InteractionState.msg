@@ -1,0 +1,16 @@
+builtin_interfaces/Time stamp
+string session_id
+string input_context_id
+uint8 COMMAND=0
+uint8 CLARIFICATION=1
+uint8 CONFIRMATION=2
+uint8 CLOSED=3
+uint8 input_mode
+string pending_task_id
+uint32 pending_revision
+builtin_interfaces/Time confirmation_expires_at
+bool recording
+string reply
+string[] missing_fields
+string error_code
+string message

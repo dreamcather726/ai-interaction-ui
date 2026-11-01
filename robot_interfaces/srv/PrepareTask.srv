@@ -1,0 +1,16 @@
+builtin_interfaces/Time stamp
+string request_id
+# Bound by the server to this task and revision before confirmation opens.
+string confirmation_context_id
+robot_interfaces/TaskSpec task
+---
+builtin_interfaces/Time stamp
+string request_id
+# Success means prepared and waiting for confirmation, not executed.
+bool success
+string message
+string error_code
+robot_interfaces/TaskSpec task
+uint32 revision
+string confirmation_context_id
+builtin_interfaces/Time confirmation_expires_at
