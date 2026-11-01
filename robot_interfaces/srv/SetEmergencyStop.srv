@@ -1,0 +1,12 @@
+# Always latch software emergency stop; clearing uses ResetEmergencyStop.
+builtin_interfaces/Time stamp
+string request_id
+string reason
+---
+builtin_interfaces/Time stamp
+string request_id
+# Success means stop latched, NOT that physical stopping is confirmed.
+bool success
+string message
+string error_code
+robot_interfaces/SafetyState safety

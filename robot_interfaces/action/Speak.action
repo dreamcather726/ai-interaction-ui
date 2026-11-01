@@ -3,12 +3,15 @@ string request_id
 string session_id
 string<=4096 text
 string voice
+# Context captured when speech is requested; never rebound on completion.
+string input_context_id
 ---
 builtin_interfaces/Time stamp
 string request_id
 bool success
 string message
 string error_code
+builtin_interfaces/Duration played_duration
 ---
 builtin_interfaces/Time stamp
 string request_id
@@ -16,3 +19,7 @@ uint8 SYNTHESIZING=0
 uint8 PLAYING=1
 uint8 stage
 string message
+# Current PlayAudio child request; empty during synthesis.
+string playback_request_id
+uint32 segment_index
+float32 progress -1.0

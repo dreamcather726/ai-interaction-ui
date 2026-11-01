@@ -10,3 +10,7 @@ uint8 decision
 bool success
 string message
 string error_code
+# Original ExecuteTask request, including rejected dispatches.
+string request_id
+string session_id
+string input_context_id

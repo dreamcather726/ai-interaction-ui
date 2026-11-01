@@ -14,3 +14,6 @@ bool success
 string message
 string error_code
 string text
+# -1 means unavailable; otherwise [0, 1]. Never bypasses confirmation.
+float32 confidence -1.0
+string language

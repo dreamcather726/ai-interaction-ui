@@ -14,3 +14,6 @@ string reply
 string[] missing_fields
 string error_code
 string message
+# Confirmation input remains closed while prompt playback is active.
+bool speaking
+string speech_request_id

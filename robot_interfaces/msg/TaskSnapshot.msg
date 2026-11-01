@@ -17,3 +17,5 @@ string message
 bool pickup_completed
 bool dropoff_completed
 bool return_completed
+# Overall measured progress: -1 unknown; otherwise [0, 1].
+float32 progress -1.0

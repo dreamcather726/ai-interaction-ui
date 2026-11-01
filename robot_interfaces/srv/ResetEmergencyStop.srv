@@ -1,0 +1,14 @@
+builtin_interfaces/Time stamp
+string request_id
+string reason
+# Bind reset to the safety state explicitly reviewed by the operator.
+string expected_boot_id
+uint64 expected_state_seq
+---
+builtin_interfaces/Time stamp
+string request_id
+# Success clears the software latch only; it never resumes a task.
+bool success
+string message
+string error_code
+robot_interfaces/SafetyState safety

@@ -13,6 +13,8 @@ find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
+find_package(diagnostic_msgs REQUIRED)
+find_package(tf2_msgs REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
@@ -28,9 +30,16 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/DispatchReport.msg"
   "msg/TaskSnapshot.msg"
   "msg/TaskEvent.msg"
+  "msg/ComponentStatus.msg"
+  "msg/RobotStatus.msg"
+  "msg/SafetyState.msg"
+  "msg/ErrorReport.msg"
+  "msg/NodeHeartbeat.msg"
   "srv/PrepareTask.srv"
   "srv/QueryTask.srv"
   "srv/CancelTask.srv"
+  "srv/SetEmergencyStop.srv"
+  "srv/ResetEmergencyStop.srv"
   "action/ParseTask.action"
   "action/ExecuteTask.action"
   "action/Speak.action"
@@ -38,6 +47,6 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES builtin_interfaces action_msgs
 )
 
-ament_export_dependencies(rosidl_default_runtime)
+ament_export_dependencies(rosidl_default_runtime builtin_interfaces action_msgs)
 
 ament_package()
