@@ -30,6 +30,17 @@ ros2 interface show robot_interfaces/action/ExecuteTask
 
 ### 接收香橙派音频
 
+接收节点启动后，可通过它请求香橙派开始／停止录音：
+
+```bash
+ros2 service call /interface/start_recording std_srvs/srv/Trigger "{}"
+ros2 service call /interface/stop_recording std_srvs/srv/Trigger "{}"
+```
+
+节点分别转发到香橙派的 `/audio/start_recording` 和 `/audio/stop_recording`（均为标准 Trigger）。香橙派需提供这两个服务：开始成功表示录音已启动；停止成功表示采集已停止并已发出完整音频片段，文件是否接收成功另看 `/ai/request_status`。服务未上线返回明确失败；请求发出后等待最多 3 秒，超时表示设备状态未知，不自动重试。此处仅实现 PC 请求端，香橙派服务端需在设备侧实现。
+
+已在 Humble 隔离 ROS 域使用模拟设备验证开始／停止转发、服务未上线、设备拒绝、约 3.10 秒超时及超时后的正常请求；真实香橙派录音控制尚待联调。
+
 `ai_interface/ai_interface/audio_receiver_node.py` 接收香橙派发布的 `/audio/segments`（`robot_interfaces/msg/AudioSegment`），校验后保存 WAV，并向 `/ai/request_status` 发布带原 request_id 的接收结果。
 
 在 Linux 工作空间根目录执行：

@@ -5,9 +5,13 @@ from uuid import uuid4
 import wave
 
 import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.qos import QoSProfile
+from rclpy.task import Future
 from robot_interfaces.msg import AudioSegment, RequestStatus
+from std_srvs.srv import Trigger
 
 
 class AudioReceiverNode(Node):
@@ -24,8 +28,75 @@ class AudioReceiverNode(Node):
             RequestStatus, '/ai/request_status', qos)
         self.subscription = self.create_subscription(
             AudioSegment, '/audio/segments', self.receive_audio, qos)
+        # Separate, reentrant callbacks keep audio reception running while waiting.
+        self.control_group = ReentrantCallbackGroup()
+        self.control_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self.start_client = self.create_client(
+            Trigger, '/audio/start_recording', callback_group=self.control_group)
+        self.stop_client = self.create_client(
+            Trigger, '/audio/stop_recording', callback_group=self.control_group)
+        self.start_service = self.create_service(
+            Trigger, '/interface/start_recording', self.start_recording,
+            callback_group=self.control_group)
+        self.stop_service = self.create_service(
+            Trigger, '/interface/stop_recording', self.stop_recording,
+            callback_group=self.control_group)
         self.get_logger().info(
             f'Listening on /audio/segments; WAV directory: {self.output_dir}')
+
+    async def start_recording(self, request, response):
+        """Ask the Orange Pi to start capturing microphone audio."""
+        return await self.forward_recording_request(self.start_client, response)
+
+    async def stop_recording(self, request, response):
+        """Ask the Orange Pi to stop and publish its completed segment."""
+        return await self.forward_recording_request(self.stop_client, response)
+
+    async def forward_recording_request(self, client, response):
+        """Forward one Trigger without blocking subscriptions or waiting forever."""
+        if not client.service_is_ready():
+            response.success = False
+            response.message = f'DEPENDENCY_UNAVAILABLE: {client.srv_name}'
+            return response
+
+        pending = client.call_async(Trigger.Request())
+        completed = Future()
+
+        def finish(remote):
+            if not completed.done():
+                try:
+                    completed.set_result(remote.result())
+                except Exception as exc:
+                    completed.set_exception(exc)
+
+        def timeout():
+            if not completed.done():
+                completed.set_exception(TimeoutError(
+                    'RECORDING_CONTROL_TIMEOUT: result unknown; '
+                    'do not assume recording started or stopped'))
+
+        pending.add_done_callback(finish)
+        timer = self.create_timer(
+            3.0, timeout, callback_group=self.control_group,
+            clock=self.control_clock)
+        try:
+            remote = await completed
+            response.success = remote.success
+            response.message = remote.message or (
+                'Recording command completed' if remote.success
+                else 'RECORDING_CONTROL_FAILED: device rejected request')
+        except Exception as exc:
+            response.success = False
+            response.message = str(exc)
+        finally:
+            self.destroy_timer(timer)
+            if not pending.done():
+                # Local cancellation does not undo an operation on the Orange Pi.
+                client.remove_pending_request(pending)
+                pending.cancel()
+        self.get_logger().info(
+            f'{client.srv_name}: success={response.success}, {response.message}')
+        return response
 
     @staticmethod
     def validate(msg):
