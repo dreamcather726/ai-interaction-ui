@@ -1,178 +1,148 @@
-"""Receive complete PCM segments from the Orange Pi over ROS 2."""
+
+"""接收 ROS2 音频数据，并保存为 WAV 文件"""
 
 from pathlib import Path
 from uuid import uuid4
 import wave
 
 import rclpy
-from rclpy.callback_groups import ReentrantCallbackGroup
-from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
-from rclpy.qos import QoSProfile
-from rclpy.task import Future
+
 from robot_interfaces.msg import AudioSegment, RequestStatus
-from std_srvs.srv import Trigger
 
 
 class AudioReceiverNode(Node):
-    """Validate incoming audio, save a WAV file and publish a receipt."""
 
     def __init__(self):
         super().__init__('audio_receiver_node')
+
+        # WAV 文件保存位置
         self.declare_parameter('output_dir', 'received_audio')
         self.output_dir = Path(
-            self.get_parameter('output_dir').value).expanduser().resolve()
-        # QoSProfile defaults: reliable, volatile, keep-last.
-        qos = QoSProfile(depth=10)
-        self.receipts = self.create_publisher(
-            RequestStatus, '/ai/request_status', qos)
-        self.subscription = self.create_subscription(
-            AudioSegment, '/audio/segments', self.receive_audio, qos)
-        # Separate, reentrant callbacks keep audio reception running while waiting.
-        self.control_group = ReentrantCallbackGroup()
-        self.control_clock = Clock(clock_type=ClockType.STEADY_TIME)
-        self.start_client = self.create_client(
-            Trigger, '/audio/start_recording', callback_group=self.control_group)
-        self.stop_client = self.create_client(
-            Trigger, '/audio/stop_recording', callback_group=self.control_group)
-        self.start_service = self.create_service(
-            Trigger, '/interface/start_recording', self.start_recording,
-            callback_group=self.control_group)
-        self.stop_service = self.create_service(
-            Trigger, '/interface/stop_recording', self.stop_recording,
-            callback_group=self.control_group)
-        self.get_logger().info(
-            f'Listening on /audio/segments; WAV directory: {self.output_dir}')
+            self.get_parameter('output_dir').value
+        )
 
-    async def start_recording(self, request, response):
-        """Ask the Orange Pi to start capturing microphone audio."""
-        return await self.forward_recording_request(self.start_client, response)
+        # 发布接收结果
+        self.receipt_pub = self.create_publisher(
+            RequestStatus,
+            '/ai/request_status',
+            10
+        )
 
-    async def stop_recording(self, request, response):
-        """Ask the Orange Pi to stop and publish its completed segment."""
-        return await self.forward_recording_request(self.stop_client, response)
+        # 接收 OrangePi 发布的音频
+        self.audio_sub = self.create_subscription(
+            AudioSegment,
+            '/audio/segments',
+            self.receive_audio,
+            10
+        )
 
-    async def forward_recording_request(self, client, response):
-        """Forward one Trigger without blocking subscriptions or waiting forever."""
-        if not client.service_is_ready():
-            response.success = False
-            response.message = f'DEPENDENCY_UNAVAILABLE: {client.srv_name}'
-            return response
+        self.get_logger().info('音频接收节点已启动')
 
-        pending = client.call_async(Trigger.Request())
-        completed = Future()
+    # 检查音频数据
+    def validate_audio(self, msg):
 
-        def finish(remote):
-            if not completed.done():
-                try:
-                    completed.set_result(remote.result())
-                except Exception as exc:
-                    completed.set_exception(exc)
+        if msg.encoding != 'pcm_s16le':
+            raise ValueError('音频格式错误')
 
-        def timeout():
-            if not completed.done():
-                completed.set_exception(TimeoutError(
-                    'RECORDING_CONTROL_TIMEOUT: result unknown; '
-                    'do not assume recording started or stopped'))
+        if msg.sample_rate != 16000:
+            raise ValueError('采样率必须为16000Hz')
 
-        pending.add_done_callback(finish)
-        timer = self.create_timer(
-            3.0, timeout, callback_group=self.control_group,
-            clock=self.control_clock)
-        try:
-            remote = await completed
-            response.success = remote.success
-            response.message = remote.message or (
-                'Recording command completed' if remote.success
-                else 'RECORDING_CONTROL_FAILED: device rejected request')
-        except Exception as exc:
-            response.success = False
-            response.message = str(exc)
-        finally:
-            self.destroy_timer(timer)
-            if not pending.done():
-                # Local cancellation does not undo an operation on the Orange Pi.
-                client.remove_pending_request(pending)
-                pending.cancel()
-        self.get_logger().info(
-            f'{client.srv_name}: success={response.success}, {response.message}')
-        return response
+        if msg.channels != 1:
+            raise ValueError('必须使用单声道')
 
-    @staticmethod
-    def validate(msg):
-        """Return PCM bytes or raise ValueError for invalid input."""
-        if not all(value.strip() for value in (
-                msg.request_id, msg.session_id, msg.segment_id,
-                msg.input_context_id)):
-            raise ValueError('request/session/segment/context IDs must be nonempty')
-        if (msg.encoding, msg.sample_rate, msg.channels) != (
-                'pcm_s16le', 16000, 1):
-            raise ValueError('Expected pcm_s16le, 16000 Hz, mono')
         pcm = bytes(msg.data)
-        if not pcm or len(pcm) > 320000 or len(pcm) % 2:
-            raise ValueError('PCM must contain 1..160000 complete int16 frames')
-        times = (msg.capture_started_at, msg.capture_ended_at, msg.stamp)
-        if any(t.sec < 0 or not 0 <= t.nanosec < 1000000000 for t in times):
-            raise ValueError('Invalid ROS timestamp')
-        start, end, stamp = (
-            t.sec * 1000000000 + t.nanosec for t in times)
-        if start <= 0 or end <= start or stamp < end:
-            raise ValueError('Expected 0 < capture start < capture end <= stamp')
-        duration = len(pcm) / 32000.0
-        if end - start > 10000000000 or abs(
-                (end - start) / 1000000000 - duration) > 0.05:
-            raise ValueError('Capture duration does not match PCM frame count')
+
+        if len(pcm) == 0:
+            raise ValueError('音频数据为空')
+
+        if len(pcm) > 320000:
+            raise ValueError('音频长度超过10秒限制')
+
+        if len(pcm) % 2 != 0:
+            raise ValueError('PCM数据长度错误')
+
+        if not msg.request_id or not msg.segment_id:
+            raise ValueError('音频请求ID不能为空')
+
         return pcm
 
+    # 保存 PCM 为 WAV
+    def save_wav(self, pcm):
+
+        self.output_dir.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        filename = str(uuid4()) + '.wav'
+        file_path = self.output_dir / filename
+
+        with wave.open(str(file_path), 'wb') as wav:
+
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+
+            wav.writeframes(pcm)
+
+        return file_path
+
+    # 接收音频
     def receive_audio(self, msg):
-        """Save one segment; receipt success means storage, not ASR success."""
-        receipt = RequestStatus()
-        receipt.request_id = msg.request_id
-        receipt.source_node = self.get_fully_qualified_name()
-        receipt.operation = '/audio/segments'
-        path = None
+
+        result = RequestStatus()
+
+        result.request_id = msg.request_id
+        result.source_node = self.get_name()
+        result.operation = '/audio/segments'
+
         try:
-            pcm = self.validate(msg)
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            # Never use sender-controlled IDs as filesystem paths.
-            path = self.output_dir / f'{uuid4().hex}.wav'
-            with wave.open(str(path), 'wb') as output:
-                output.setnchannels(1)
-                output.setsampwidth(2)
-                output.setframerate(16000)
-                output.writeframes(pcm)
-            receipt.success = True
-            receipt.stage = RequestStatus.RECEIVED
-            receipt.message = f'Audio saved: {path} ({len(pcm)} PCM bytes)'
-            self.get_logger().info(
-                f'request_id={msg.request_id}: {receipt.message}')
-        except (ValueError, OSError, wave.Error) as exc:
-            if path is not None:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError as cleanup_error:
-                    self.get_logger().error(f'Partial WAV cleanup failed: {cleanup_error}')
-            receipt.success = False
-            receipt.stage = RequestStatus.REJECTED
-            receipt.error_code = (
-                'INVALID_REQUEST' if isinstance(exc, ValueError)
-                else 'AUDIO_STORAGE_FAILED')
-            receipt.message = str(exc)
-            self.get_logger().error(
-                f'request_id={msg.request_id}: {receipt.error_code}: {exc}')
-        receipt.stamp = self.get_clock().now().to_msg()
-        self.receipts.publish(receipt)
+
+            # 1. 检查音频
+            pcm = self.validate_audio(msg)
+
+            # 2. 保存 WAV
+            file_path = self.save_wav(pcm)
+
+            # 3. 返回成功结果
+            result.success = True
+            result.stage = RequestStatus.RECEIVED
+            result.message = '音频接收成功: ' + str(file_path)
+
+            self.get_logger().info(result.message)
+
+        except (ValueError, OSError, wave.Error) as e:
+
+            # 返回失败结果
+            result.success = False
+            result.stage = RequestStatus.REJECTED
+            result.error_code = 'AUDIO_RECEIVE_FAILED'
+            result.message = str(e)
+
+            self.get_logger().error(result.message)
+
+        # 4. 发布接收回执
+        result.stamp = self.get_clock().now().to_msg()
+
+        self.receipt_pub.publish(result)
 
 
 def main(args=None):
-    """Run until stopped, keeping the receiver alive after bad input."""
+
     rclpy.init(args=args)
+
     node = AudioReceiverNode()
+
     try:
         rclpy.spin(node)
+
     except KeyboardInterrupt:
         pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+
+    node.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()
