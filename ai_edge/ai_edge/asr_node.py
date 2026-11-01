@@ -1,0 +1,188 @@
+"""提供文件语音识别服务；模型推理在工作线程执行，不阻塞 ROS 回调。"""
+
+import time
+import wave
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+import rclpy
+from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.clock import Clock, ClockType
+from rclpy.node import Node
+from rclpy.task import Future
+
+from ai_edge.asr_audio import read_asr_request
+from ai_edge.asr_health import ASRHealth
+from ai_edge.funasr_backend import ASRError, FunASRBackend
+from robot_interfaces.msg import RecognizedText
+from robot_interfaces.srv import RecognizeAudio
+
+
+class ASRNode(Node):
+    """单模型、单推理任务；并发请求明确拒绝，不让模型调用无限排队。"""
+
+    def __init__(self):
+        super().__init__("asr_node")
+        for name, value in (
+            ("audio_root", "received_audio"),
+            ("model_path", "iic/SenseVoiceSmall"),
+            ("device", "cpu"),
+            ("language", "zh"),
+            ("ncpu", 4),
+            ("recognition_timeout", 25.0),
+        ):
+            self.declare_parameter(name, value)
+        self.audio_root = (
+            Path(self.get_parameter("audio_root").value).expanduser().resolve()
+        )
+        self.timeout = self.get_parameter("recognition_timeout").value
+        if not 0 < self.timeout <= 300 or self.get_parameter("ncpu").value < 1:
+            raise ValueError("recognition_timeout 必须在 (0,300] 秒，ncpu 必须大于零")
+        self.backend = FunASRBackend(
+            self.get_parameter("model_path").value,
+            self.get_parameter("device").value,
+            self.get_parameter("language").value,
+            self.get_parameter("ncpu").value,
+        )
+        self.ready = False
+        self.load_error = None
+        self.pending = None
+        self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="funasr")
+        self.loading = self.worker.submit(self.backend.load)
+        self.health = ASRHealth(self)
+        self.clock = Clock(clock_type=ClockType.STEADY_TIME)
+        self.poll_timer = self.create_timer(0.05, self.poll, clock=self.clock)
+        self.health_timer = self.create_timer(
+            1.0, self.publish_health, clock=self.clock
+        )
+        self.group = ReentrantCallbackGroup()
+        self.service = self.create_service(
+            RecognizeAudio,
+            "/ai/recognize_audio",
+            self.recognize,
+            callback_group=self.group,
+        )
+        self.get_logger().info("ASR 模型正在后台加载，请等待“模型已就绪”再录音")
+
+    def poll(self):
+        """在 ROS 线程回收后台结果，更新就绪状态并处理等待超时。"""
+        if self.loading is not None and self.loading.done():
+            try:
+                self.loading.result()
+                self.ready = True
+                self.get_logger().info("FunASR 模型已就绪，可以开始真实语音识别")
+            except Exception as exc:
+                self.load_error = exc
+                self.get_logger().error(f"ASR 模型不可用：{exc}")
+            self.loading = None
+            self.publish_health()
+        if self.pending is None:
+            return
+        job = self.pending
+        if job["worker"].done():
+            if not job["response"].done():
+                try:
+                    job["response"].set_result(job["worker"].result())
+                except Exception as exc:
+                    job["response"].set_exception(exc)
+            self.pending = None
+        elif time.monotonic() >= job["deadline"] and not job["response"].done():
+            job["response"].set_exception(
+                ASRError("ASR_TIMEOUT", "识别等待超时；本次不返回假结果")
+            )
+            # Python 线程不能强行终止模型；完成前仍拒绝新推理，防止无限堆积。
+
+    async def recognize(self, request, response):
+        """原样关联输入信息，异步等待真实识别结果并统一封装失败响应。"""
+        result = response.result
+        for field in (
+            "request_id",
+            "session_id",
+            "segment_id",
+            "input_context_id",
+            "capture_started_at",
+            "capture_ended_at",
+        ):
+            setattr(result, field, getattr(request, field))
+        result.status = RecognizedText.FAILED
+        try:
+            _, pcm = read_asr_request(request, self.audio_root)
+            if not self.ready:
+                if self.load_error:
+                    raise ASRError(
+                        getattr(self.load_error, "code", "ASR_MODEL_UNAVAILABLE"),
+                        str(self.load_error),
+                    )
+                raise ASRError("ASR_NOT_READY", "模型仍在初始化，请等待就绪提示")
+            if self.pending is not None:
+                raise ASRError("ASR_BUSY", "模型仍在处理上一条音频，本次未受理")
+            answer = Future()
+            self.pending = {
+                "worker": self.worker.submit(self.backend.transcribe, pcm),
+                "response": answer,
+                "deadline": time.monotonic() + self.timeout,
+            }
+            self.get_logger().info(f"开始识别，请求 ID：{request.request_id}")
+            transcript = await answer
+            result.text = transcript.text
+            result.language = transcript.language
+            result.confidence = transcript.confidence
+            if transcript.text:
+                result.status, result.success = RecognizedText.SUCCESS, True
+                result.message = "语音识别完成"
+            else:
+                result.status = RecognizedText.NO_SPEECH
+                result.error_code, result.message = "NO_SPEECH", "未识别到有效语音"
+        except FileNotFoundError as exc:
+            result.error_code, result.message = (
+                "FILE_NOT_FOUND",
+                f"音频文件不存在：{exc}",
+            )
+        except ASRError as exc:
+            result.error_code, result.message = exc.code, str(exc)
+        except (ValueError, OSError, wave.Error, EOFError) as exc:
+            result.error_code, result.message = (
+                "AUDIO_FORMAT_UNSUPPORTED",
+                f"音频校验失败：{exc}",
+            )
+        except Exception as exc:
+            result.error_code, result.message = "ASR_FAILED", f"语音识别异常：{exc}"
+        result.recognized_at = self.get_clock().now().to_msg()
+        result.stamp = self.get_clock().now().to_msg()
+        if result.success:
+            self.get_logger().info(
+                f"识别完成，请求 ID：{request.request_id}，文字：{result.text}"
+            )
+        else:
+            self.get_logger().warning(
+                f"识别未成功：{result.error_code}，{result.message}"
+            )
+        return response
+
+    def publish_health(self):
+        self.health.publish(self.ready, self.pending is not None, self.load_error)
+
+    def close(self):
+        """拒绝新的后台任务；Python 无法强行终止已经运行的推理线程。"""
+        self.worker.shutdown(wait=False, cancel_futures=True)
+
+
+def main(args=None):
+    """启动文件 ASR 服务；推荐由已安装 FunASR 的虚拟环境执行。"""
+    rclpy.init(args=args)
+    node = None
+    try:
+        node = ASRNode()
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        if node is not None:
+            node.close()
+            node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

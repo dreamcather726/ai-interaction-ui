@@ -12,6 +12,9 @@ setup(
         ('share/' + package_name, ['package.xml']),
     ],
     install_requires=['setuptools'],
+    extras_require={
+        'asr': ['funasr>=1.3.26,<2', 'numpy>=1.26,<2'],
+    },
     zip_safe=True,
     maintainer='tao',
     maintainer_email='tao@todo.todo',
@@ -20,6 +23,7 @@ setup(
     entry_points={
         'console_scripts': [
             'audio_processing_node = ai_edge.audio_processing_node:main',
+            'asr_node = ai_edge.asr_node:main',
         ],
     },
 )

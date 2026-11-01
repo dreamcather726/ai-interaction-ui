@@ -13,8 +13,9 @@ from ai_edge.audio_result_validation import (
     validate_asr_result,
     validate_parse_result,
 )
+from ai_edge.audio_visualization import AudioVisualization
 from robot_interfaces.action import ParseTask
-from robot_interfaces.msg import RecognizedText, RequestStatus
+from robot_interfaces.msg import AudioProcessingState, RecognizedText, RequestStatus
 from robot_interfaces.srv import RecognizeAudio
 
 
@@ -24,6 +25,7 @@ class AudioPipeline:
     def __init__(self, node, publish_receipt):
         self.node = node
         self.publish_receipt = publish_receipt
+        node.declare_parameter("enable_semantic", True)
         node.declare_parameter("asr_timeout", 30.0)
         node.declare_parameter("parse_timeout", 30.0)
         node.declare_parameter("allowed_station_ids", Parameter.Type.STRING_ARRAY)
@@ -37,6 +39,7 @@ class AudioPipeline:
         self.parser = ActionClient(node, ParseTask, "/ai/parse_task")
         self.text_pub = node.create_publisher(RecognizedText, "/ai/asr_text", 10)
         self.queue = AudioJobQueue()
+        self.visualization = AudioVisualization(node)
         self.active = None
         self.clock = Clock(clock_type=ClockType.STEADY_TIME)
         self.timer = node.create_timer(0.05, self.tick, clock=self.clock)
@@ -60,12 +63,28 @@ class AudioPipeline:
 
     def enqueue(self, msg, path, pcm):
         """委托独立队列模块受理任务，调度器不重复实现去重。"""
-        return self.queue.enqueue(msg, path, pcm, active=self.active is not None)
+        before = len(self.queue)
+        outcome = self.queue.enqueue(msg, path, pcm, active=self.active is not None)
+        if len(self.queue) > before:
+            self.visualization.state(
+                {"msg": msg, "path": path.resolve()},
+                AudioProcessingState.QUEUED,
+                "音频已进入 AI 队列",
+            )
+        return outcome
 
     def stage(self, name, timeout):
         """记录当前阶段与单调时钟截止时间。"""
         self.active["stage"] = name
         self.active["deadline"] = time.monotonic() + timeout
+        stages = {
+            "asr_wait": (AudioProcessingState.WAITING_ASR, "等待 ASR 服务"),
+            "asr_result": (AudioProcessingState.RECOGNIZING, "正在识别语音"),
+            "parse_wait": (AudioProcessingState.WAITING_PARSE, "等待语义解析服务"),
+            "parse_goal": (AudioProcessingState.PARSING, "已提交语义解析请求"),
+            "parse_result": (AudioProcessingState.PARSING, "正在进行语义解析"),
+        }
+        self.visualization.state(self.active, *stages[name])
 
     def fail(self, code, message):
         """报告当前阶段失败，结束本次任务但继续处理后续队列。"""
@@ -76,6 +95,12 @@ class AudioPipeline:
             else "/ai/recognize_audio"
         )
         self.report(job, operation, False, message, code)
+        state = AudioProcessingState.FAILED
+        if code == "NO_SPEECH":
+            state = AudioProcessingState.NO_SPEECH
+        elif code == "CANCELED":
+            state = AudioProcessingState.CANCELED
+        self.visualization.state(job, state, message, code)
         self.active = None
 
     @staticmethod
@@ -186,12 +211,21 @@ class AudioPipeline:
             self.fail(exc.code, str(exc))
             return
         self.text_pub.publish(result)
+        self.visualization.asr_result(result)
         if not valid:
             self.fail(result.error_code, result.message)
             return
         save_asr_text(job["path"], result.text)
         job["text"] = result.text
         self.report(job, "/ai/recognize_audio", True, result.text)
+        if not self.node.get_parameter("enable_semantic").value:
+            self.visualization.state(
+                job,
+                AudioProcessingState.ASR_COMPLETED,
+                "语音识别完成，本次未启用语义解析",
+            )
+            self.active = None
+            return
         self.stage("parse_wait", 3.0)
 
     def accept_parse(self, wrapped):
@@ -206,6 +240,16 @@ class AudioPipeline:
             return
         result = wrapped.result
         path = save_parse_result(job["path"], result)
+        self.visualization.parse_result(result)
+        state = (
+            AudioProcessingState.READY
+            if ready
+            else {
+                ParseTask.Result.NEED_CLARIFICATION: AudioProcessingState.NEED_CLARIFICATION,
+                ParseTask.Result.CANCELED: AudioProcessingState.CANCELED,
+            }.get(result.outcome, AudioProcessingState.FAILED)
+        )
+        self.visualization.state(job, state, result.message, result.error_code)
         self.report(
             job,
             "/ai/parse_task",

@@ -2,13 +2,13 @@
 
 ROS 2 Humble AI 交互项目。程序与模型部署在 PC 的 Linux 虚拟机中，模块之间使用 ROS 2 Topic、Service 和 Action 通信。
 
-本次先定义公共接口。当前未实现界面、ASR、模型推理、播报和任务执行节点。
+当前已实现录音接收转交、真实 FunASR 识别服务和可视化音频状态／结果接口。语义 LLM 模型适配、界面、播报和机器人执行节点尚未实现。
 
 | 目录 | 内容 |
 |---|---|
 | `robot_interfaces` | 公共消息、服务与动作定义 |
 | `ai_interface` | 接收音频、保存文件、打包元数据并转交 AI 端；另提供设备侧麦克风发送入口 |
-| `ai_edge` | 接收音频任务、ASR 与语义解析调度；真实模型适配待接入 |
+| `ai_edge` | 接收音频任务、真实 FunASR 识别、语义调度与可视化结果接口 |
 | `robot_visualization` | 界面与可视化的 Python 包骨架 |
 | `docs/接口协议.md` | 接口清单、字段约定、成功／失败回复及验收要求 |
 
@@ -150,7 +150,7 @@ ros2 run ai_edge audio_processing_node --ros-args \
 
 audio_root 必须覆盖接口保存目录，AI 端会拒绝目录外文件；白名单示例须换成项目真实配置。真实麦克风发送和开始／停止调用方式保持不变。只接收存档、不转交时，接口节点设置 `-p auto_forward:=false`。
 
-AI 端的 audio_pipeline.py 调用 `/ai/recognize_audio`（RecognizeAudio Service）和 `/ai/parse_task`（ParseTask Action）。AI 工程师仍需实现真实 ASR／LLM 模型适配节点；当前已有任务入口和编排逻辑，不含模型或固定答案。语音识别及后续处理都在 ai_edge 职责范围内，接口端没有 ASR 客户端。
+AI 端的 audio_pipeline.py 调用 `/ai/recognize_audio`（RecognizeAudio Service）和 `/ai/parse_task`（ParseTask Action）。ASR 已接入 FunASR/SenseVoiceSmall，真实 LLM 模型适配仍待接入；模型权重缓存于运行机器，不作为源码提交。语音识别及后续处理都在 ai_edge 职责范围内，接口端没有 ASR 客户端。
 
 RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来源、时间、状态与实际文本；成功后写同名 .txt，失败／静音不进入语义解析。ParseTask 使用 audio:+segment_id、原会话／上下文与配置白名单，结果写同名 .parse.json。只有真实模型返回的内容才会保存；该结果不等于已准备、确认或执行任务。当前按独立单句处理，澄清问题只输出供交互层使用。
 
@@ -195,3 +195,65 @@ python3 src/ai_interface/ai_interface/microphone_sender_node.py
 它仍是 ROS 2 节点，仍需已构建的 robot_interfaces；只是无需通过 ros2 run 启动。原 ros2 run 入口也保留兼容。
 
 2026-11-01 已在 WSL Humble 验证两个业务包构建、完整通信契约回归、中文 INFO 输出、Python 直接启动和正常退出；本次未启动实际麦克风采集或真实模型推理。
+
+
+### 真实 FunASR 识别：本次新增的启动步骤
+
+后端为 SenseVoiceSmall，模型适配、文件校验、ROS 服务、模型健康及界面状态各自独立：
+
+| 文件 | 职责 |
+|---|---|
+| ai_edge/ai_edge/funasr_backend.py | 加载一次 FunASR 模型、真实 PCM 推理与文本标签清理 |
+| ai_edge/ai_edge/asr_audio.py | ASR 请求到已有共享目录／WAV 校验的适配 |
+| ai_edge/ai_edge/asr_node.py | /ai/recognize_audio 服务、后台加载与单任务推理、超时／并发处理 |
+| ai_edge/ai_edge/asr_health.py | ASR 就绪／忙碌／故障状态与节点心跳 |
+| ai_edge/ai_edge/audio_visualization.py | 音频阶段、语义结果广播及晚加入查询 |
+
+先在 WSL 更新并重建全部接口使用方（无需重新安装已可用的 FunASR 环境）：
+
+```bash
+cd ~/ai_interaction_ws/src
+git pull --ff-only origin main
+cd ~/ai_interaction_ws
+source /opt/ros/humble/setup.bash
+colcon build --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
+source install/setup.bash
+```
+
+终端一启动 ASR。本机已确认可用的环境是 ~/venvs/ros2_audio，Python 3.10.12；模型已缓存到下面的实际路径：
+
+```bash
+cd ~/ai_interaction_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+source ~/venvs/ros2_audio/bin/activate
+python -m ai_edge.asr_node --ros-args \
+  -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
+  -p model_path:=/home/tao/.cache/modelscope/models/iic--SenseVoiceSmall/snapshots/master \
+  -p device:=cpu
+```
+
+路径不同的机器替换实际环境与模型目录；也可设置 model_path:=iic/SenseVoiceSmall 按需下载到用户缓存。模型约 936 MB，首次下载／加载完成前状态为 STARTING，日志提示“FunASR 模型已就绪”后再发起录音。使用 python -m 是为了明确使用安装了 FunASR 的环境；由系统 Python 生成的 ros2 run 脚本未必能访问虚拟环境。代码仍注册 asr_node 的 ROS 可执行入口。
+
+终端二启动 AI 编排。当前先只完成 ASR，关闭尚未接入模型的语义步骤：
+
+```bash
+cd ~/ai_interaction_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run ai_edge audio_processing_node --ros-args \
+  -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
+  -p enable_semantic:=false
+```
+
+接收节点、麦克风发送和开始／停止录音按前文运行。实际识别完成后收到 /ai/asr_text，WAV 旁生成同名 .txt，阶段为 ASR_COMPLETED。未来接入 /ai/parse_task 后，恢复 enable_semantic:=true（默认值）并配置真实工位／物料白名单；没有语义模型时不要把其等待失败误认为 ASR 失败。
+
+FunASR 服务参数：audio_root、model_path、device（默认 cpu）、language（默认 zh）、ncpu（默认 4）、recognition_timeout（默认 25 秒，范围 (0,300]）。编排器 asr_timeout 默认 30 秒，应大于服务端等待上限并留通信余量。模型只加载一次，推理在工作线程执行；有活动推理时新请求返回 ASR_BUSY。超时不生成文字，底层线程未结束时仍保持忙碌，不让新推理无限排队。仅全零 PCM 或模型未返回有效文字时报告 NO_SPEECH；模型未提供可校验置信度，使用 -1，不伪造分数。服务失败后节点继续运行。
+
+后端使用 FunASR 集成实现、trust_remote_code=False，不执行下载仓库中的自定义 Python。现有 ros2_audio 环境已验证，不修改其 torch/torchaudio 安装。setup.py 提供可选 asr 依赖声明，便于新环境安装；新机器还需安装匹配的 PyTorch/torchaudio。你提供的 docs/requirements.txt 不由本次任务改写或提交。
+
+可视化组的订阅、查询、字段、状态枚举及运行示例见 [音频接口对接说明](docs/可视化交互组_音频接口.md)。
+
+2026-11-01 实测：WSL Ubuntu-22.04、Humble、ros2_audio/FunASR 1.4.19、CPU 上从真实录音识别出“喂喂喂，你好你好，123123。”，已验证接口交接→真实 ASR→文字保存、静音、缺文件、错误格式、模型就绪状态，以及推理期间可视化查询不被阻塞。语义阶段仍采用临时契约服务验证，未实现真实 LLM 推理。
+
+实现依据：[FunASR](https://github.com/modelscope/FunASR)、[SenseVoice](https://github.com/FunAudioLLM/SenseVoice)。
