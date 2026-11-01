@@ -1,6 +1,7 @@
 
 """接收 ROS2 音频数据，并保存为 WAV 文件"""
 
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 import wave
@@ -75,7 +76,10 @@ class AudioReceiverNode(Node):
             exist_ok=True
         )
 
-        filename = str(uuid4()) + '.wav'
+        # 使用接收保存时的北京时间，与 WSL 系统时区无关。
+        saved_at = datetime.now(timezone(timedelta(hours=8)))
+        timestamp = saved_at.strftime('%Y%m%d_%H%M%S_%f')
+        filename = f'audio_{timestamp}_{uuid4().hex}.wav'
         file_path = self.output_dir / filename
 
         with wave.open(str(file_path), 'wb') as wav:
