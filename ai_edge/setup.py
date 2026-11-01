@@ -19,6 +19,7 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
+            'audio_processing_node = ai_edge.audio_processing_node:main',
         ],
     },
 )

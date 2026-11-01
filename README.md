@@ -7,8 +7,8 @@ ROS 2 Humble AI 交互项目。程序与模型部署在 PC 的 Linux 虚拟机�
 | 目录 | 内容 |
 |---|---|
 | `robot_interfaces` | 公共消息、服务与动作定义 |
-| `ai_interface` | 麦克风采集、音频接收与 ASR→语义解析调用链 |
-| `ai_edge` | 语音识别、模型解析与播报的 Python 包骨架 |
+| `ai_interface` | 接收音频、保存文件、打包元数据并转交 AI 端；另提供设备侧麦克风发送入口 |
+| `ai_edge` | 接收音频任务、ASR 与语义解析调度；真实模型适配待接入 |
 | `robot_visualization` | 界面与可视化的 Python 包骨架 |
 | `docs/接口协议.md` | 接口清单、字段约定、成功／失败回复及验收要求 |
 
@@ -30,7 +30,7 @@ ros2 interface show robot_interfaces/action/ExecuteTask
 
 ### 接收香橙派音频
 
-真实麦克风发送节点启动后，可直接请求开始／停止录音（接收节点负责保存及后续 AI 调用，不提供录音控制转发入口）：
+真实麦克风发送节点启动后，可直接请求开始／停止录音（接收节点负责保存和打包转交，不提供录音控制转发入口）：
 
 ```bash
 ros2 service call /audio/start_recording std_srvs/srv/Trigger "{}"
@@ -41,7 +41,7 @@ ros2 service call /audio/stop_recording std_srvs/srv/Trigger "{}"
 
 历史版本曾验证控制转发和三秒超时；当前简化版接收节点已移除此转发功能。真实香橙派录音控制尚待联调。
 
-`ai_interface/ai_interface/audio_receiver_node.py` 接收香橙派发布的 `/audio/segments`（`robot_interfaces/msg/AudioSegment`），校验后保存 WAV，并向 `/ai/request_status` 发布带原 request_id 的接收结果；随后由 `audio_pipeline.py` 自动请求文件 ASR，再请求语义解析。
+`ai_interface/ai_interface/audio_receiver_node.py` 接收香橙派发布的 `/audio/segments`（`robot_interfaces/msg/AudioSegment`），校验后保存 WAV，并向 `/ai/request_status` 发布带原 request_id 的接收结果；随后由 `audio_forwarder.py` 将完整来源信息和 WAV 绝对路径提交给 ai_edge。
 
 在 Linux 工作空间根目录执行：
 
@@ -109,36 +109,53 @@ ros2 run ai_interface microphone_sender_node --ros-args -p device:=RDPSource
 2026-11-01 已在 WSL 默认 RDPSource 实际调用 parecord 约 2 秒，收到 53100 字节非全零 PCM，ROS 接收端保存 WAV 后与原 PCM 完全一致（16000 Hz、单声道、16 位）。重复开始／停止、无效设备不生成假音频也已验证；临时录音已清理。未试听或验收 ASR，未验证香橙派硬件。
 
 
-### 保存音频后自动执行 ASR 和语义解析
+### 接口端打包转交，AI 端处理
 
 ```text
-香橙派麦克风 → /audio/segments → PC 保存 WAV
-  → /ai/recognize_audio Service（绝对路径及关联 ID）
-  → RecognizedText → /ai/asr_text + 同名 .txt
-  → /ai/parse_task Action → 同名 .parse.json + 状态回执
+香橙派 microphone_sender_node：真实采集
+  → /audio/segments
+PC ai_interface/audio_receiver_node：接收、保存 WAV
+  → audio_forwarder：打包全部来源元数据 + WAV 绝对路径
+  → /ai/process_audio（ProcessAudio Service）
+PC ai_edge/audio_processing_node：接收任务并校验文件
+  → ai_edge/audio_pipeline：ASR → 语义解析 → 保存结果
 ```
 
-AI 工程师需实现 `/ai/recognize_audio`（新增 `robot_interfaces/srv/RecognizeAudio`）与现有 `/ai/parse_task`（`robot_interfaces/action/ParseTask`）。ai_edge 当前没有模型节点，本次交付服务契约与实际客户端调用链，不会把固定答案当作识别结果。接口端与 AI 节点必须能访问同一个 WAV 绝对路径；文件路径不等于跨机器文件传输。
+ai_interface 不识别语音、不判断 ASR 文本、不调用 ParseTask、不配置模型白名单。ProcessAudio 请求包含 stamp、request_id、session_id、segment_id、input_context_id、capture_started_at、capture_ended_at、sample_rate、channels、encoding、audio_path；音频内容已经保存为 WAV，不在服务请求中重复复制。文件关闭后才提交请求，不扫描“最新文件”。
 
-全部接口使用方重新构建。启动 AI 服务后，在 PC 启动接收节点并配置真实工位／物料白名单，例如：
+Response.receipt 复用 RequestStatus，仅表示 AI 接受／拒绝任务，不表示识别完成。ai_edge 独立发布后续 ASR 和语义状态，接口端不消费这些结果来触发下一阶段。两边必须共享同一绝对路径；跨机器无共享目录时，不能只传本机路径。
+
+重新构建接口、接口包和 AI 包：
 
 ```bash
+cd ~/ai_interaction_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to ai_interface ai_edge --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
+source install/setup.bash
+```
+
+各终端加载环境。接口端保持原启动命令；AI 端另起一个终端运行：
+
+```bash
+# 接口端：只负责保存和转交
 ros2 run ai_interface audio_receiver_node --ros-args \
-  -p output_dir:=received_audio \
+  -p output_dir:=/home/tao/ai_interaction_ws/received_audio
+
+# AI 端：接收任务并调度识别、语义处理
+ros2 run ai_edge audio_processing_node --ros-args \
+  -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
   -p allowed_station_ids:="[station_a, station_b]" \
   -p allowed_object_ids:="[box_1]"
 ```
 
-这些白名单仅为配置示例，须换成实际项目配置。未配置白名单时不接受任何完整运动任务候选。录音仍由现有开始／停止服务控制，保存后无需再手动选取最新文件或触发 ASR。只存档时可设置 `-p auto_recognize:=false`。
+audio_root 必须覆盖接口保存目录，AI 端会拒绝目录外文件；白名单示例须换成项目真实配置。真实麦克风发送和开始／停止调用方式保持不变。只接收存档、不转交时，接口节点设置 `-p auto_forward:=false`。
 
-RecognizeAudio 请求包含 stamp、request_id、session_id、segment_id、input_context_id、capture_started_at、capture_ended_at、audio_path。响应只有 `result`，类型为现有 RecognizedText，包含完整的状态、错误信息、文本、置信度、语言及关联字段。AI 工程师应原样回传 ID 和采集时间，填写真实识别完成时间；缺文件返回 FILE_NOT_FOUND，WAV 格式不符返回 AUDIO_FORMAT_UNSUPPORTED。
+AI 端的 audio_pipeline.py 调用 `/ai/recognize_audio`（RecognizeAudio Service）和 `/ai/parse_task`（ParseTask Action）。AI 工程师仍需实现真实 ASR／LLM 模型适配节点；当前已有任务入口和编排逻辑，不含模型或固定答案。语音识别及后续处理都在 ai_edge 职责范围内，接口端没有 ASR 客户端。
 
-ASR 成功且文本非空才进入 ParseTask；input_id=`audio:`+segment_id，保留来源上下文并传入白名单。该阶段只处理独立单句，历史和部分候选为空；澄清问题保存供交互层处理，不自动开启下一轮。解析 READY 需通过任务字段和白名单校验；结果不会自动准备、确认或执行任务。
+RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来源、时间、状态与实际文本；成功后写同名 .txt，失败／静音不进入语义解析。ParseTask 使用 audio:+segment_id、原会话／上下文与配置白名单，结果写同名 .parse.json。只有真实模型返回的内容才会保存；该结果不等于已准备、确认或执行任务。当前按独立单句处理，澄清问题只输出供交互层使用。
 
-查看 `/ai/request_status` 时按 request_id 和 operation 区分保存、ASR、语义解析。识别文字保存在同名 .txt，实际解析结果（含关联 ID、候选、outcome、缺失字段和澄清问题）保存在 .parse.json。它不是已准备或已确认的任务。`/ai/asr_text` 是结果展示出口，不用它启动第二次解析。
+`/ai/request_status` 按 request_id、source_node、operation 区分保存、AI受理、ASR和语义阶段；`/ai/asr_text` 由 AI 端发布，仅作结果输出，不触发第二条解析链。
 
-依赖发现和 Action Goal 接受各等待 3 秒；ASR／解析结果默认各等待 30 秒，参数 asr_timeout／parse_timeout 范围 (0,300] 秒。异步调用不阻塞音频接收。超时不自动重试，迟到结果不推进流程；解析超时尝试取消，不把请求取消视作取消已完成。
+接口侧异步等待 AI 服务／受理响应各最多 3 秒，超时保留 WAV 并标记交接未确认，不自动重试。接口发送队列最多 10 项。AI 侧独立维护最多 10 项任务和 1024 项进程内去重指纹：相同请求／来源不重复识别，内容冲突拒绝。重启不扫描旧文件，去重尚未跨重启持久化。AI 侧 ASR／解析默认各等待 30 秒，参数 asr_timeout／parse_timeout 范围 (0,300]，Goal 等待 3 秒，超时不推进后续阶段。任务执行仍须经过原有准备和显式确认。
 
-FIFO 最多容纳 10 个输入，满时保留 WAV 并报告 PIPELINE_BUSY。运行期间最多登记 1024 个输入去重指纹，重放不重复调用 AI，身份内容冲突明确拒绝；登记满时报告 RECOVERY_REQUIRED。去重不跨重启，重启也不扫描旧文件；进入正式任务执行前，仍需原协议的持久化去重和用户确认。重复音频投递可能额外保存 WAV，但在同一进程中不重复调用识别链。
-
-验证：WSL Humble 构建及文件 Service→Action 契约测试已通过，覆盖失败／静音、关联校验、澄清、重放、白名单与超时恢复。使用的是临时测试服务，未执行真实 ASR／LLM 模型推理。详见接口协议第 13 节。
+验证记录（2026-11-01）：WSL Humble 临时工作空间 /tmp/ai-role-split-csXsZ5 中三个包构建通过，接口打包→AI受理→ASR服务→语义Action 的实际 ROS 通信契约验证通过，覆盖静音、失败、重放、关联错误、澄清、白名单、拒绝、超时及恢复；所有后续识别阶段由 AI 节点发起。临时契约服务不是实际模型推理，测试结果已清理。

@@ -10,7 +10,7 @@ import rclpy
 from rclpy.node import Node
 
 from robot_interfaces.msg import AudioSegment, RequestStatus
-from ai_interface.audio_pipeline import AudioPipeline
+from ai_interface.audio_forwarder import AudioForwarder
 
 
 class AudioReceiverNode(Node):
@@ -39,8 +39,8 @@ class AudioReceiverNode(Node):
             10
         )
 
-        self.pipeline = AudioPipeline(self)
-        self.get_logger().info('音频接收节点已启动：保存后自动请求 ASR，再进行语义解析')
+        self.forwarder = AudioForwarder(self)
+        self.get_logger().info('音频接收节点已启动：保存后打包转交 ai_edge')
 
     # 检查音频数据
     def validate_audio(self, msg):
@@ -142,7 +142,7 @@ class AudioReceiverNode(Node):
 
         self.receipt_pub.publish(result)
         if result.success:
-            self.pipeline.enqueue(msg, file_path)
+            self.forwarder.enqueue(msg, file_path)
 
 
 def main(args=None):
@@ -157,7 +157,7 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
 
-    node.pipeline.close()
+    node.forwarder.close()
     node.destroy_node()
     if rclpy.ok():
         rclpy.shutdown()

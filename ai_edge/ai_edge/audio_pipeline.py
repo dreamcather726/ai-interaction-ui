@@ -1,4 +1,4 @@
-"""Asynchronously hand saved WAV files to ASR, then to semantic parsing."""
+"""AI-side orchestration of ASR and semantic parsing for submitted files."""
 
 from collections import deque
 import hashlib
@@ -19,7 +19,6 @@ class AudioPipeline:
 
     def __init__(self, node):
         self.node = node
-        node.declare_parameter('auto_recognize', True)
         node.declare_parameter('asr_timeout', 30.0)
         node.declare_parameter('parse_timeout', 30.0)
         node.declare_parameter('allowed_station_ids', Parameter.Type.STRING_ARRAY)
@@ -54,10 +53,8 @@ class AudioPipeline:
         else:
             self.node.get_logger().warning(text)
 
-    def enqueue(self, msg, path):
+    def enqueue(self, msg, path, pcm):
         """Keep source context and reject replay conflicts before any AI call."""
-        if not self.node.get_parameter('auto_recognize').value:
-            return
         job = {'msg': msg, 'path': path.resolve()}
         # Hash semantic values, not CDR padding bytes, which may vary per receive.
         metadata = [getattr(msg, field) for field in (
@@ -66,7 +63,7 @@ class AudioPipeline:
         metadata.extend((getattr(msg, field).sec, getattr(msg, field).nanosec)
                         for field in ('stamp', 'capture_started_at', 'capture_ended_at'))
         digest = hashlib.sha256(json.dumps(metadata).encode('utf-8'))
-        digest.update(bytes(msg.data))
+        digest.update(pcm)
         fingerprint = digest.hexdigest()
         key = (msg.session_id, msg.segment_id)
         for cache, identity, code in (
@@ -74,22 +71,17 @@ class AudioPipeline:
                 (self.seen_inputs, key, 'INPUT_ID_CONFLICT')):
             if identity in cache:
                 same = cache[identity] == fingerprint
-                self.report(job, '/ai/recognize_audio', same,
-                            'Duplicate input: not resubmitted' if same else
-                            'Input identity was reused with different content',
-                            '' if same else code)
-                return
+                return (same, '' if same else code,
+                        'Duplicate input: already registered, not resubmitted' if same
+                        else 'Input identity was reused with different content')
         if len(self.queue) + (self.active is not None) >= 10:
-            self.report(job, '/ai/recognize_audio', False,
-                        'Audio saved; AI queue is full', 'PIPELINE_BUSY')
-            return
+            return False, 'PIPELINE_BUSY', 'Audio saved; AI queue is full'
         if len(self.seen_requests) >= 1024:
-            self.report(job, '/ai/recognize_audio', False,
-                        'Audio saved; deduplication cache is full', 'RECOVERY_REQUIRED')
-            return
+            return False, 'RECOVERY_REQUIRED', 'Audio saved; deduplication cache is full'
         self.seen_requests[msg.request_id] = fingerprint
         self.seen_inputs[key] = fingerprint
         self.queue.append(job)
+        return True, '', 'Audio accepted by AI; processing queued'
 
     def stage(self, name, timeout):
         self.active['stage'] = name
