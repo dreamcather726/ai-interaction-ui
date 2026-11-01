@@ -1,24 +1,25 @@
 """AI-side orchestration of ASR and semantic parsing for submitted files."""
 
-from collections import deque
-import hashlib
-import json
 import time
 
-from action_msgs.msg import GoalStatus
 from rclpy.action import ActionClient
 from rclpy.clock import Clock, ClockType
 from rclpy.parameter import Parameter
 from robot_interfaces.action import ParseTask
-from robot_interfaces.msg import RecognizedText, RequestStatus, TaskCandidate
+from robot_interfaces.msg import RecognizedText, RequestStatus
 from robot_interfaces.srv import RecognizeAudio
+from ai_edge.audio_job_queue import AudioJobQueue
+from ai_edge.audio_result_validation import (
+    ResultValidationError, validate_asr_result, validate_parse_result)
+from ai_edge.audio_result_store import save_asr_text, save_parse_result
 
 
 class AudioPipeline:
     """Process one recording at a time without blocking audio reception."""
 
-    def __init__(self, node):
+    def __init__(self, node, publish_receipt):
         self.node = node
+        self.publish_receipt = publish_receipt
         node.declare_parameter('asr_timeout', 30.0)
         node.declare_parameter('parse_timeout', 30.0)
         node.declare_parameter('allowed_station_ids', Parameter.Type.STRING_ARRAY)
@@ -30,10 +31,8 @@ class AudioPipeline:
         self.asr = node.create_client(RecognizeAudio, '/ai/recognize_audio')
         self.parser = ActionClient(node, ParseTask, '/ai/parse_task')
         self.text_pub = node.create_publisher(RecognizedText, '/ai/asr_text', 10)
-        self.queue = deque()
+        self.queue = AudioJobQueue()
         self.active = None
-        self.seen_requests = {}
-        self.seen_inputs = {}
         self.clock = Clock(clock_type=ClockType.STEADY_TIME)
         self.timer = node.create_timer(0.05, self.tick, clock=self.clock)
 
@@ -46,7 +45,7 @@ class AudioPipeline:
         receipt.success = success
         receipt.stage = RequestStatus.RECEIVED if success else RequestStatus.REJECTED
         receipt.message, receipt.error_code = message, code
-        self.node.receipt_pub.publish(receipt)
+        self.publish_receipt(receipt)
         text = f'{operation} request_id={receipt.request_id}: {code} {message}'
         if success:
             self.node.get_logger().info(text)
@@ -54,34 +53,7 @@ class AudioPipeline:
             self.node.get_logger().warning(text)
 
     def enqueue(self, msg, path, pcm):
-        """Keep source context and reject replay conflicts before any AI call."""
-        job = {'msg': msg, 'path': path.resolve()}
-        # Hash semantic values, not CDR padding bytes, which may vary per receive.
-        metadata = [getattr(msg, field) for field in (
-            'request_id', 'session_id', 'segment_id', 'input_context_id',
-            'sample_rate', 'channels', 'encoding')]
-        metadata.extend((getattr(msg, field).sec, getattr(msg, field).nanosec)
-                        for field in ('stamp', 'capture_started_at', 'capture_ended_at'))
-        digest = hashlib.sha256(json.dumps(metadata).encode('utf-8'))
-        digest.update(pcm)
-        fingerprint = digest.hexdigest()
-        key = (msg.session_id, msg.segment_id)
-        for cache, identity, code in (
-                (self.seen_requests, msg.request_id, 'REQUEST_ID_CONFLICT'),
-                (self.seen_inputs, key, 'INPUT_ID_CONFLICT')):
-            if identity in cache:
-                same = cache[identity] == fingerprint
-                return (same, '' if same else code,
-                        'Duplicate input: already registered, not resubmitted' if same
-                        else 'Input identity was reused with different content')
-        if len(self.queue) + (self.active is not None) >= 10:
-            return False, 'PIPELINE_BUSY', 'Audio saved; AI queue is full'
-        if len(self.seen_requests) >= 1024:
-            return False, 'RECOVERY_REQUIRED', 'Audio saved; deduplication cache is full'
-        self.seen_requests[msg.request_id] = fingerprint
-        self.seen_inputs[key] = fingerprint
-        self.queue.append(job)
-        return True, '', 'Audio accepted by AI; processing queued'
+        return self.queue.enqueue(msg, path, pcm, active=self.active is not None)
 
     def stage(self, name, timeout):
         self.active['stage'] = name
@@ -172,99 +144,34 @@ class AudioPipeline:
 
     def accept_asr(self, result):
         job = self.active
-        msg = job['msg']
-        fields = ('request_id', 'session_id', 'segment_id', 'input_context_id',
-                  'capture_started_at', 'capture_ended_at')
-        if any(getattr(result, f) != getattr(msg, f) for f in fields):
-            self.fail('ASR_RESULT_MISMATCH', 'ASR result identifiers/times do not match input')
-            return
-        times = (result.recognized_at, result.stamp)
-        if any(t.sec < 0 or not 0 <= t.nanosec < 10**9 for t in times):
-            self.fail('INVALID_ASR_RESULT', 'Invalid recognition timestamp')
-            return
-        recognized, published = (t.sec * 10**9 + t.nanosec for t in times)
-        captured = msg.capture_ended_at.sec * 10**9 + msg.capture_ended_at.nanosec
-        if not captured <= recognized <= published or not (
-                result.confidence == -1 or 0 <= result.confidence <= 1):
-            self.fail('INVALID_ASR_RESULT', 'Invalid recognition time order or confidence')
-            return
-        valid = (
-            result.status == RecognizedText.SUCCESS and result.success
-            and bool(result.text.strip()) and len(result.text) <= 4096
-            and not result.error_code and bool(result.message.strip()))
-        failed = (
-            not result.success and not result.text and bool(result.error_code)
-            and bool(result.message.strip())
-            and (result.status == RecognizedText.FAILED or (
-                result.status == RecognizedText.NO_SPEECH and result.error_code == 'NO_SPEECH')))
-        if not valid and not failed:
-            self.fail('INVALID_ASR_RESULT', 'ASR status/success/text/error fields are inconsistent')
+        try:
+            valid = validate_asr_result(job['msg'], result)
+        except ResultValidationError as exc:
+            self.fail(exc.code, str(exc))
             return
         self.text_pub.publish(result)
         if not valid:
             self.fail(result.error_code, result.message)
             return
-        job['path'].with_suffix('.txt').write_text(result.text, encoding='utf-8')
+        save_asr_text(job['path'], result.text)
         job['text'] = result.text
         self.report(job, '/ai/recognize_audio', True, result.text)
         self.stage('parse_wait', 3.0)
 
     def accept_parse(self, wrapped):
         job = self.active
-        result, msg = wrapped.result, job['msg']
-        expected = (msg.request_id, msg.session_id, 'audio:' + msg.segment_id, msg.input_context_id)
-        actual = (result.request_id, result.session_id, result.input_id, result.input_context_id)
-        if actual != expected:
-            self.fail('PARSE_RESULT_MISMATCH', 'Parsing result does not match source input')
+        stations = self.node.get_parameter_or('allowed_station_ids').value or []
+        objects = self.node.get_parameter_or('allowed_object_ids').value or []
+        try:
+            ready = validate_parse_result(job['msg'], wrapped, stations, objects)
+        except ResultValidationError as exc:
+            self.fail(exc.code, str(exc))
             return
-        ready = (wrapped.status == GoalStatus.STATUS_SUCCEEDED and result.success
-                 and result.outcome == ParseTask.Result.READY and not result.error_code
-                 and not result.missing_fields and not result.clarification_question)
-        if ready and not self.valid_candidate(result.candidate):
-            self.fail('INVALID_MODEL_OUTPUT', 'Candidate violates task fields or configured whitelist')
-            return
-        clarification = (wrapped.status == GoalStatus.STATUS_SUCCEEDED and not result.success
-                         and result.outcome == ParseTask.Result.NEED_CLARIFICATION
-                         and result.error_code == 'MISSING_FIELDS' and result.missing_fields
-                         and result.clarification_question.strip())
-        terminal_failure = (not result.success and bool(result.error_code) and (
-            (wrapped.status == GoalStatus.STATUS_ABORTED and result.outcome in (
-                ParseTask.Result.UNSUPPORTED, ParseTask.Result.FAILED)) or
-            (wrapped.status == GoalStatus.STATUS_CANCELED and result.outcome == ParseTask.Result.CANCELED)))
-        if not result.message.strip() or not (ready or clarification or terminal_failure):
-            self.fail('INVALID_MODEL_OUTPUT', 'Action status and semantic result are inconsistent')
-            return
-        candidate = {name: getattr(result.candidate, name) for name in (
-            'task_type', 'object_id', 'pickup_station_id', 'dropoff_station_id',
-            'destination_station_id', 'return_required', 'return_station_id')}
-        report = dict(zip(('request_id', 'session_id', 'input_id', 'input_context_id'), actual))
-        report.update(success=result.success, outcome=result.outcome, message=result.message,
-                      error_code=result.error_code, candidate=candidate,
-                      stamp={'sec': result.stamp.sec, 'nanosec': result.stamp.nanosec},
-                      missing_fields=list(result.missing_fields),
-                      clarification_question=result.clarification_question)
-        path = job['path'].with_suffix('.parse.json')
-        path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
-        self.report(job, '/ai/parse_task', bool(ready),
+        result = wrapped.result
+        path = save_parse_result(job['path'], result)
+        self.report(job, '/ai/parse_task', ready,
                     f'{result.message}; result={path}', result.error_code)
         self.active = None
-
-    def valid_candidate(self, candidate):
-        stations = set(self.node.get_parameter_or('allowed_station_ids').value or [])
-        objects = set(self.node.get_parameter_or('allowed_object_ids').value or [])
-        if candidate.task_type == TaskCandidate.NAVIGATE:
-            targets = [candidate.destination_station_id]
-            valid = not any((candidate.object_id, candidate.pickup_station_id, candidate.dropoff_station_id))
-        elif candidate.task_type == TaskCandidate.TRANSPORT:
-            targets = [candidate.pickup_station_id, candidate.dropoff_station_id]
-            valid = bool(candidate.object_id in objects) and not candidate.destination_station_id
-        else:
-            return False
-        if candidate.return_required:
-            targets.append(candidate.return_station_id)
-        elif candidate.return_station_id:
-            return False
-        return valid and all(target and target in stations for target in targets)
 
     def close(self):
         """Stop local work and request cancellation of an active parse."""

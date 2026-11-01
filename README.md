@@ -159,3 +159,22 @@ RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来�
 接口侧异步等待 AI 服务／受理响应各最多 3 秒，超时保留 WAV 并标记交接未确认，不自动重试。接口发送队列最多 10 项。AI 侧独立维护最多 10 项任务和 1024 项进程内去重指纹：相同请求／来源不重复识别，内容冲突拒绝。重启不扫描旧文件，去重尚未跨重启持久化。AI 侧 ASR／解析默认各等待 30 秒，参数 asr_timeout／parse_timeout 范围 (0,300]，Goal 等待 3 秒，超时不推进后续阶段。任务执行仍须经过原有准备和显式确认。
 
 验证记录（2026-11-01）：WSL Humble 临时工作空间 /tmp/ai-role-split-csXsZ5 中三个包构建通过，接口打包→AI受理→ASR服务→语义Action 的实际 ROS 通信契约验证通过，覆盖静音、失败、重放、关联错误、澄清、白名单、拒绝、超时及恢复；所有后续识别阶段由 AI 节点发起。临时契约服务不是实际模型推理，测试结果已清理。
+
+
+### 音频模块职责与依赖方向
+
+| 文件 | 单一职责 |
+|---|---|
+| ai_interface/audio_receiver_node.py | ROS 音频订阅、接收回执与调用转交组件 |
+| ai_interface/audio_storage.py | PCM 传输校验、带北京时间的 WAV 保存 |
+| ai_interface/audio_forwarder.py | 打包来源数据、异步提交 AI 受理服务 |
+| ai_edge/audio_processing_node.py | AI 端 ProcessAudio 服务入口与组件装配 |
+| ai_edge/audio_input.py | 共享文件路径、WAV 内容和来源元数据校验 |
+| ai_edge/audio_job_queue.py | 有界任务队列、指纹计算与进程内去重 |
+| ai_edge/audio_pipeline.py | ASR→语义阶段调度、ROS 客户端和超时控制 |
+| ai_edge/audio_result_validation.py | ASR／语义响应、任务候选及白名单校验 |
+| ai_edge/audio_result_store.py | 实际识别文本和解析 JSON 的持久化 |
+
+表中路径相对于各功能包根目录（例如 ai_edge/audio_pipeline.py 的仓库位置为 ai_edge/ai_edge/audio_pipeline.py）。节点与流程层调用辅助模块，辅助模块不反向导入节点或调度器；存储、队列和校验函数不创建 ROS 节点或客户端。状态发布通过显式传入的回调交给编排器，不再要求编排器访问外层节点的 receipt_pub 属性。
+
+本次仅重构职责边界，现有 Topic／Service／Action、参数和 ros2 run 入口不变。2026-11-01 已在 WSL Humble 构建两个业务包并重跑完整通信契约回归，保存／转交／ASR／语义、失败、静音、去重、白名单、超时恢复均通过。仍未运行真实模型推理。
