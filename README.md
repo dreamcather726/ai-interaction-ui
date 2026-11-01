@@ -85,7 +85,7 @@ source install/setup.bash
 # 终端一
 ros2 run ai_interface audio_receiver_node
 # 终端二
-ros2 run ai_interface microphone_sender_node
+python3 src/ai_interface/ai_interface/microphone_sender_node.py
 ```
 
 终端三开始录音，说完后停止并发送：
@@ -99,7 +99,7 @@ ros2 service call /audio/stop_recording std_srvs/srv/Trigger "{}"
 
 ```bash
 pactl list short sources
-ros2 run ai_interface microphone_sender_node --ros-args -p device:=RDPSource
+python3 src/ai_interface/ai_interface/microphone_sender_node.py --ros-args -p device:=RDPSource
 ```
 
 开始回执成功只表示 parecord 进程已启动，设备初始化失败由节点日志报告。停止回执成功表示真实音频已发布；接收落盘仍查看 `/ai/request_status`。采集最多 10 秒／320000 字节，后台持续读取管道，达到上限自动停止并发送。停止总会终止采集：没有接收者或无音频时返回失败并丢弃，不伪造结果；重复停止不重发，节点退出会停止采集并丢弃未发送数据。尚未使用会话管理时默认生成 mic-session／mic-context 标识，仅用于独立录音链路测试；接入任务系统后用 session_id、input_context_id 参数传入当前有效上下文。
@@ -178,3 +178,20 @@ RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来�
 表中路径相对于各功能包根目录（例如 ai_edge/audio_pipeline.py 的仓库位置为 ai_edge/ai_edge/audio_pipeline.py）。节点与流程层调用辅助模块，辅助模块不反向导入节点或调度器；存储、队列和校验函数不创建 ROS 节点或客户端。状态发布通过显式传入的回调交给编排器，不再要求编排器访问外层节点的 receipt_pub 属性。
 
 本次仅重构职责边界，现有 Topic／Service／Action、参数和 ros2 run 入口不变。2026-11-01 已在 WSL Humble 构建两个业务包并重跑完整通信契约回归，保存／转交／ASR／语义、失败、静音、去重、白名单、超时恢复均通过。仍未运行真实模型推理。
+
+
+### 代码排版和中文运行提示
+
+音频处理源文件统一使用 4 空格缩进、88 字符目标行宽和分组导入，职责说明、关键步骤注释以及程序自身的运行提示采用中文。ROS 节点名、Topic／Service／Action 名称、字段名和稳定错误码保持原值；外部模型返回的识别文字、说明及底层系统错误不会被自动翻译。
+
+麦克风发送程序已补充 Python 直接运行入口，在工作空间根目录执行：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 src/ai_interface/ai_interface/microphone_sender_node.py
+```
+
+它仍是 ROS 2 节点，仍需已构建的 robot_interfaces；只是无需通过 ros2 run 启动。原 ros2 run 入口也保留兼容。
+
+2026-11-01 已在 WSL Humble 验证两个业务包构建、完整通信契约回归、中文 INFO 输出、Python 直接启动和正常退出；本次未启动实际麦克风采集或真实模型推理。

@@ -1,4 +1,4 @@
-"""Capture a real PulseAudio microphone with parecord and publish PCM."""
+"""使用 parecord 采集真实麦克风，并通过 ROS 2 发送 PCM 音频。"""
 
 import os
 import shutil
@@ -11,75 +11,98 @@ from uuid import uuid4
 import rclpy
 from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
-from robot_interfaces.msg import AudioSegment
 from std_srvs.srv import Trigger
+
+from robot_interfaces.msg import AudioSegment
 
 
 class MicrophoneSenderNode(Node):
-    """Provide start/stop controls for real microphone capture."""
+    """提供真实麦克风的开始、停止和自动限时录音服务。"""
 
     def __init__(self):
-        super().__init__('microphone_sender_node')
-        self.declare_parameter('device', '@DEFAULT_SOURCE@')
-        self.declare_parameter('session_id', 'mic-session-' + uuid4().hex)
-        self.declare_parameter('input_context_id', 'mic-context-' + uuid4().hex)
-        self.device = self.get_parameter('device').value
+        super().__init__("microphone_sender_node")
+        self.declare_parameter("device", "@DEFAULT_SOURCE@")
+        self.declare_parameter("session_id", "mic-session-" + uuid4().hex)
+        self.declare_parameter("input_context_id", "mic-context-" + uuid4().hex)
+        self.device = self.get_parameter("device").value
+        # 录音子进程及 PCM 缓冲仅在一次采集期间有效。
         self.process = None
         self.errors = None
         self.pcm = bytearray()
         self.started_at = None
-        self.session_id = ''
-        self.context_id = ''
-        self.publisher = self.create_publisher(AudioSegment, '/audio/segments', 10)
+        self.session_id = ""
+        self.context_id = ""
+        self.publisher = self.create_publisher(AudioSegment, "/audio/segments", 10)
         self.start_service = self.create_service(
-            Trigger, '/audio/start_recording', self.start_recording)
+            Trigger, "/audio/start_recording", self.start_recording
+        )
         self.stop_service = self.create_service(
-            Trigger, '/audio/stop_recording', self.stop_recording)
+            Trigger, "/audio/stop_recording", self.stop_recording
+        )
+        # 使用单调时钟，系统时间调整不会延长十秒采集上限。
         self.timer_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self.timer = self.create_timer(
-            0.05, self.poll_recording, clock=self.timer_clock)
+            0.05, self.poll_recording, clock=self.timer_clock
+        )
         self.get_logger().info(
-            f'Real microphone ready for requests: device={self.device}')
+            f"真实麦克风节点已就绪，等待录音请求；设备={self.device}"
+        )
 
     def start_recording(self, request, response):
-        """Launch capture without blocking the ROS executor."""
+        """启动录音子进程，避免阻塞 ROS 回调执行器。"""
         if self.process is not None:
             response.success = self.process.poll() is None
-            response.message = 'Recording already active' if response.success else (
-                'AUDIO_DEVICE_UNAVAILABLE: previous capture exited; stop first')
+            response.message = (
+                "正在录音，无需重复开始"
+                if response.success
+                else (
+                    "AUDIO_DEVICE_UNAVAILABLE: 上一次采集已退出，请先调用停止服务清理"
+                )
+            )
             return response
-        executable = shutil.which('parecord')
+        executable = shutil.which("parecord")
         if executable is None:
-            response.message = 'AUDIO_DEVICE_UNAVAILABLE: install pulseaudio-utils'
+            response.message = (
+                "AUDIO_DEVICE_UNAVAILABLE: 未找到 parecord，请安装 pulseaudio-utils"
+            )
             return response
-        self.session_id = self.get_parameter('session_id').value.strip()
-        self.context_id = self.get_parameter('input_context_id').value.strip()
+        self.session_id = self.get_parameter("session_id").value.strip()
+        self.context_id = self.get_parameter("input_context_id").value.strip()
         if not self.session_id or not self.context_id:
-            response.message = 'INVALID_REQUEST: session/context must be nonempty'
+            response.message = "INVALID_REQUEST: 会话 ID 和输入上下文 ID 不能为空"
             return response
         if self.get_clock().now().nanoseconds <= 0:
-            response.message = 'INVALID_REQUEST: ROS clock not ready'
+            response.message = "INVALID_REQUEST: ROS 时钟尚未就绪"
             return response
         try:
             self.errors = tempfile.TemporaryFile()
             self.process = subprocess.Popen(
-                [executable, '--raw', '--format=s16le', '--rate=16000',
-                 '--channels=1', '--latency-msec=50', '--device=' + self.device],
-                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                stderr=self.errors)
+                [
+                    executable,
+                    "--raw",
+                    "--format=s16le",
+                    "--rate=16000",
+                    "--channels=1",
+                    "--latency-msec=50",
+                    "--device=" + self.device,
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=self.errors,
+            )
             os.set_blocking(self.process.stdout.fileno(), False)
         except (OSError, ValueError) as exc:
             self.abort_recording()
-            response.message = f'AUDIO_DEVICE_UNAVAILABLE: {exc}'
+            response.message = f"AUDIO_DEVICE_UNAVAILABLE: 麦克风设备不可用：{exc}"
             return response
         self.pcm.clear()
         self.started_at = time.monotonic()
         response.success = True
-        response.message = 'Capture process started; awaiting microphone PCM'
+        response.message = "录音进程已启动，正在等待麦克风 PCM 数据"
         return response
 
     def drain_audio(self):
-        """Drain the pipe regularly so parecord cannot block on a full pipe."""
+        """持续读取录音管道，避免缓冲区写满后阻塞采集。"""
         while self.process is not None:
             try:
                 chunk = os.read(self.process.stdout.fileno(), 65536)
@@ -93,12 +116,15 @@ class MicrophoneSenderNode(Node):
                 break
 
     def poll_recording(self):
-        """Collect bytes and enforce the ten-second maximum."""
+        """收集 PCM 数据，到达十秒或字节上限后自动停止并发送。"""
         if self.process is None:
             return
         self.drain_audio()
-        if (self.process.poll() is not None or len(self.pcm) >= 320000
-                or time.monotonic() - self.started_at >= 10):
+        if (
+            self.process.poll() is not None
+            or len(self.pcm) >= 320000
+            or time.monotonic() - self.started_at >= 10
+        ):
             result = self.stop_recording(None, Trigger.Response())
             if result.success:
                 self.get_logger().info(result.message)
@@ -106,10 +132,10 @@ class MicrophoneSenderNode(Node):
                 self.get_logger().error(result.message)
 
     def close_capture(self):
-        """Stop the process, drain remaining bytes and release resources."""
+        """停止录音子进程，读取剩余数据并释放管道与临时资源。"""
         process = self.process
         if process is None:
-            return b'', '', 0
+            return b"", "", 0
         try:
             if process.poll() is None:
                 process.send_signal(signal.SIGINT)
@@ -118,10 +144,10 @@ class MicrophoneSenderNode(Node):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.communicate(timeout=1)
-                raise RuntimeError('Capture did not stop normally; audio discarded')
+                raise RuntimeError("录音进程未正常停止，已丢弃本次音频")
             self.errors.seek(0)
-            error = self.errors.read(4096).decode(errors='replace').strip()
-            return remaining or b'', error, process.returncode
+            error = self.errors.read(4096).decode(errors="replace").strip()
+            return remaining or b"", error, process.returncode
         finally:
             if process.stdout is not None:
                 process.stdout.close()
@@ -131,44 +157,48 @@ class MicrophoneSenderNode(Node):
             self.started_at = None
 
     def stop_recording(self, request, response):
-        """Always stop capture; publish only complete valid PCM frames."""
+        """停止实际采集，仅发送包含完整采样帧的有效 PCM 数据。"""
         if self.process is None:
             response.success = True
-            response.message = 'Already stopped; no audio republished'
+            response.message = "录音已停止，不重复发送旧音频"
             return response
         try:
             remaining, error, code = self.close_capture()
-            self.pcm.extend(remaining[:320000 - len(self.pcm)])
+            self.pcm.extend(remaining[: 320000 - len(self.pcm)])
             if code not in (0, -signal.SIGINT):
-                raise RuntimeError(error or f'parecord exited with code {code}')
+                raise RuntimeError(error or f"parecord 异常退出，退出码为 {code}")
             if not self.pcm or len(self.pcm) % 2:
-                raise RuntimeError('No complete PCM audio; check microphone access')
+                raise RuntimeError("未取得完整 PCM 音频，请检查麦克风访问权限")
             if self.publisher.get_subscription_count() == 0:
-                raise RuntimeError('Recording stopped but no audio receiver; discarded')
+                raise RuntimeError("录音已停止，但未发现音频接收节点；本次数据已丢弃")
             now = self.get_clock().now().nanoseconds
             start = now - len(self.pcm) // 2 * 62500
             if start <= 0:
-                raise RuntimeError('ROS clock is not ready; audio discarded')
+                raise RuntimeError("ROS 时钟尚未就绪，本次音频已丢弃")
             msg = AudioSegment()
-            msg.request_id = 'mic-request-' + uuid4().hex
-            msg.segment_id = 'mic-segment-' + uuid4().hex
+            msg.request_id = "mic-request-" + uuid4().hex
+            msg.segment_id = "mic-segment-" + uuid4().hex
             msg.session_id, msg.input_context_id = self.session_id, self.context_id
-            msg.capture_started_at.sec, msg.capture_started_at.nanosec = divmod(start, 10**9)
+            msg.capture_started_at.sec, msg.capture_started_at.nanosec = divmod(
+                start, 10**9
+            )
             msg.capture_ended_at.sec, msg.capture_ended_at.nanosec = divmod(now, 10**9)
             msg.stamp.sec, msg.stamp.nanosec = divmod(now, 10**9)
-            msg.sample_rate, msg.channels, msg.encoding = 16000, 1, 'pcm_s16le'
+            msg.sample_rate, msg.channels, msg.encoding = 16000, 1, "pcm_s16le"
             msg.data = bytes(self.pcm)
             self.publisher.publish(msg)
             response.success = True
-            response.message = f'Published {len(self.pcm)} PCM bytes, request_id={msg.request_id}'
+            response.message = (
+                f"音频已发送：{len(self.pcm)} 字节 PCM，请求 ID：{msg.request_id}"
+            )
         except (OSError, RuntimeError) as exc:
-            response.message = f'AUDIO_CAPTURE_FAILED: {exc}'
+            response.message = f"AUDIO_CAPTURE_FAILED: 音频采集失败：{exc}"
         finally:
             self.pcm.clear()
         return response
 
     def abort_recording(self):
-        """Discard audio when shutting down; never publish from cleanup."""
+        """退出时停止录音并丢弃未发送数据，清理过程不发布音频。"""
         try:
             self.close_capture()
         except (OSError, RuntimeError) as exc:
@@ -181,7 +211,7 @@ class MicrophoneSenderNode(Node):
 
 
 def main(args=None):
-    """Run real microphone capture until interrupted."""
+    """运行真实麦克风节点，并在退出时释放录音资源。"""
     rclpy.init(args=args)
     node = None
     try:
@@ -195,3 +225,7 @@ def main(args=None):
             node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

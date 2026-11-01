@@ -1,60 +1,59 @@
-
 """接收 ROS2 音频数据，并保存为 WAV 文件"""
 
-from pathlib import Path
 import wave
+from pathlib import Path
 
 import rclpy
 from rclpy.node import Node
 
-from robot_interfaces.msg import AudioSegment, RequestStatus
 from ai_interface.audio_forwarder import AudioForwarder
-from ai_interface.audio_storage import validate_audio_segment, save_wav
+from ai_interface.audio_storage import save_wav, validate_audio_segment
+from robot_interfaces.msg import AudioSegment, RequestStatus
 
 
 class AudioReceiverNode(Node):
+    """接口端音频接收节点：接收、保存、转交，不执行语音识别。"""
 
     def __init__(self):
-        super().__init__('audio_receiver_node')
+        super().__init__("audio_receiver_node")
 
         # WAV 文件保存位置
-        self.declare_parameter('output_dir', 'received_audio')
-        self.output_dir = Path(
-            self.get_parameter('output_dir').value
-        ).expanduser().resolve()
+        self.declare_parameter("output_dir", "received_audio")
+        self.output_dir = (
+            Path(self.get_parameter("output_dir").value).expanduser().resolve()
+        )
 
         # 发布接收结果
         self.receipt_pub = self.create_publisher(
-            RequestStatus,
-            '/ai/request_status',
-            10
+            RequestStatus, "/ai/request_status", 10
         )
 
         # 接收 OrangePi 发布的音频
         self.audio_sub = self.create_subscription(
-            AudioSegment,
-            '/audio/segments',
-            self.receive_audio,
-            10
+            AudioSegment, "/audio/segments", self.receive_audio, 10
         )
 
         self.forwarder = AudioForwarder(self)
-        self.get_logger().info('音频接收节点已启动：保存后打包转交 ai_edge')
+        self.get_logger().info("音频接收节点已启动：保存后打包转交 ai_edge")
 
     # 检查音频数据
     def validate_audio(self, msg):
+        """委托存储模块校验音频传输数据。"""
         return validate_audio_segment(msg)
+
     # 保存 PCM 为 WAV
     def save_wav(self, pcm):
+        """委托存储模块保存 WAV，返回实际文件路径。"""
         return save_wav(self.output_dir, pcm)
+
     # 接收音频
     def receive_audio(self, msg):
-
+        """处理一个音频片段，保存成功后提交 AI 端受理。"""
         result = RequestStatus()
 
         result.request_id = msg.request_id
         result.source_node = self.get_name()
-        result.operation = '/audio/segments'
+        result.operation = "/audio/segments"
 
         try:
 
@@ -67,7 +66,7 @@ class AudioReceiverNode(Node):
             # 3. 返回成功结果
             result.success = True
             result.stage = RequestStatus.RECEIVED
-            result.message = '音频接收成功: ' + str(file_path)
+            result.message = "音频接收成功: " + str(file_path)
 
             self.get_logger().info(result.message)
 
@@ -76,7 +75,7 @@ class AudioReceiverNode(Node):
             # 返回失败结果
             result.success = False
             result.stage = RequestStatus.REJECTED
-            result.error_code = 'AUDIO_RECEIVE_FAILED'
+            result.error_code = "AUDIO_RECEIVE_FAILED"
             result.message = str(e)
 
             self.get_logger().error(result.message)
@@ -90,7 +89,7 @@ class AudioReceiverNode(Node):
 
 
 def main(args=None):
-
+    """启动接口端接收节点，并在退出时清理转交请求。"""
     rclpy.init(args=args)
 
     node = AudioReceiverNode()
@@ -107,5 +106,5 @@ def main(args=None):
         rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
