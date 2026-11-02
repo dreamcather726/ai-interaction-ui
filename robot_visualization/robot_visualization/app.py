@@ -1,0 +1,52 @@
+"""ROS 可执行入口：一个命令启动工作台与现有语音处理链路。"""
+
+import signal
+import sys
+
+import rclpy
+from PySide6.QtWidgets import QApplication
+
+from robot_visualization.ros.worker import RosWorker
+from robot_visualization.ui.theme import configure_font
+from robot_visualization.ui.window import DashboardWindow
+
+
+def build_dashboard():
+    """装配窗口与通信线程，供实际入口和 Qt 交互验收共用。"""
+    worker = RosWorker()
+    window = DashboardWindow(worker.config)
+    worker.record.connect(window.receive_record)
+    worker.availability.connect(window.receive_availability)
+    worker.control.connect(window.control_result)
+    worker.log.connect(window.append_log)
+    window.start_requested.connect(lambda: worker.command("start"))
+    window.stop_requested.connect(lambda: worker.command("stop"))
+    window.query_requested.connect(lambda value: worker.command("query", value))
+    window.shutdown_requested.connect(
+        lambda: (
+            worker.requestInterruption()
+            if worker.isRunning()
+            else window.finish_close()
+        )
+    )
+    worker.finished.connect(window.on_worker_finished)
+    return worker, window
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    app = QApplication([sys.argv[0]])
+    configure_font(app)
+    worker, window = build_dashboard()
+    # Qt 主线程接管窗口退出；工作线程完成清理后再销毁 ROS 上下文。
+    signal.signal(signal.SIGINT, lambda signum, frame: window.close())
+    signal.signal(signal.SIGTERM, lambda signum, frame: window.close())
+    window.show()
+    worker.start()
+    try:
+        app.exec()
+    finally:
+        worker.requestInterruption()
+        worker.wait()
+        if rclpy.ok():
+            rclpy.shutdown()

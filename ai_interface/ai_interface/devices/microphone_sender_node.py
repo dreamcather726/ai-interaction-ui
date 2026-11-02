@@ -13,6 +13,7 @@ from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from std_srvs.srv import Trigger
 
+from ai_interface.devices.capture_health import MicrophoneHealth
 from robot_interfaces.msg import AudioSegment
 
 
@@ -32,6 +33,7 @@ class MicrophoneSenderNode(Node):
         self.started_at = None
         self.session_id = ""
         self.context_id = ""
+        self.health = MicrophoneHealth(self, lambda: self.process)
         self.publisher = self.create_publisher(AudioSegment, "/audio/segments", 10)
         self.start_service = self.create_service(
             Trigger, "/audio/start_recording", self.start_recording
@@ -49,6 +51,10 @@ class MicrophoneSenderNode(Node):
         )
 
     def start_recording(self, request, response):
+        """控制回执与实际采集状态同步发布。"""
+        return self.health.response(self._start_recording(request, response))
+
+    def _start_recording(self, request, response):
         """启动录音子进程，避免阻塞 ROS 回调执行器。"""
         if self.process is not None:
             response.success = self.process.poll() is None
@@ -157,6 +163,10 @@ class MicrophoneSenderNode(Node):
             self.started_at = None
 
     def stop_recording(self, request, response):
+        """手动／自动停止共用状态广播，界面无需靠倒计时推断。"""
+        return self.health.response(self._stop_recording(request, response))
+
+    def _stop_recording(self, request, response):
         """停止实际采集，仅发送包含完整采样帧的有效 PCM 数据。"""
         if self.process is None:
             response.success = True
