@@ -60,9 +60,10 @@ class FunASRBackend:
                 "ASR_DEPENDENCY_MISSING", f"当前 Python 无法导入 FunASR：{exc}"
             ) from exc
         try:
+            source = "本地模型目录" if checkpoint is not None else "指定模型"
             self.progress(
-                f"FunASR 依赖导入成功；正在初始化模型 {self.model_name}，"
-                f"device={self.device}；缓存缺失时由模型库下载权重"
+                f"FunASR 依赖导入成功；正在初始化{source} {self.model_name}，"
+                f"device={self.device}"
             )
             options = {}
             if checkpoint is not None:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 def default_model_path():
     """兼容源码运行和 colcon 安装后的入口，返回项目本地模型目录。"""
-    for origin in (Path(__file__).resolve().parent, Path.cwd().resolve()):
+    for origin in (Path.cwd().resolve(), Path(__file__).resolve().parent):
         for parent in (origin, *origin.parents):
             for root in (parent, parent / "src"):
                 if (root / "ai_edge/package.xml").is_file() and (

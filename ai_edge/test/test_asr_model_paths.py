@@ -9,6 +9,26 @@ from ai_edge.asr.model_paths import default_model_path
 
 
 class ModelPathTests(unittest.TestCase):
+    def test_active_project_takes_priority_over_another_install(self):
+        with tempfile.TemporaryDirectory() as folder:
+            installed = Path(folder) / "installed-project"
+            active = Path(folder) / "active-project"
+            for root in (installed, active):
+                for package in ("ai_edge", "robot_visualization"):
+                    (root / package).mkdir(parents=True)
+                    (root / package / "package.xml").touch()
+            entry = (
+                installed
+                / "install/ai_edge/lib/python3.10/site-packages/ai_edge/asr/model_paths.py"
+            )
+            with (
+                patch("ai_edge.asr.model_paths.__file__", str(entry)),
+                patch("ai_edge.asr.model_paths.Path.cwd", return_value=active),
+            ):
+                self.assertEqual(
+                    default_model_path(), active / "models/SenseVoiceSmall"
+                )
+
     def test_installed_entry_finds_models_in_project(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / "project"
