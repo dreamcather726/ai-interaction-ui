@@ -2,7 +2,7 @@
 
 ROS 2 Humble AI 交互项目。程序与模型部署在 PC 的 Linux 虚拟机中，模块之间使用 ROS 2 Topic、Service 和 Action 通信。
 
-当前已实现录音接收转交、真实 FunASR 识别服务和可视化音频状态／结果接口。语义 LLM 模型适配、界面、播报和机器人执行节点尚未实现。
+当前已实现录音接收转交、真实 FunASR 识别服务、Ollama 千问 2B 语义解析和可视化音频状态／结果接口。界面、播报和机器人执行节点尚未实现。
 
 | 目录 | 内容 |
 |---|---|
@@ -150,7 +150,7 @@ ros2 run ai_edge audio_processing_node --ros-args \
 
 audio_root 必须覆盖接口保存目录，AI 端会拒绝目录外文件；白名单示例须换成项目真实配置。真实麦克风发送和开始／停止调用方式保持不变。只接收存档、不转交时，接口节点设置 `-p auto_forward:=false`。
 
-AI 端的 audio_pipeline.py 调用 `/ai/recognize_audio`（RecognizeAudio Service）和 `/ai/parse_task`（ParseTask Action）。ASR 已接入 FunASR/SenseVoiceSmall，真实 LLM 模型适配仍待接入；模型权重缓存于运行机器，不作为源码提交。语音识别及后续处理都在 ai_edge 职责范围内，接口端没有 ASR 客户端。
+AI 端的 audio_pipeline.py 调用 `/ai/recognize_audio`（RecognizeAudio Service）和 `/ai/parse_task`（ParseTask Action）。ASR 已接入 FunASR/SenseVoiceSmall，语义解析由下文的 Ollama/qwen3.5:2b 提供；模型权重缓存于运行机器，不作为源码提交。语音识别及后续处理都在 ai_edge 职责范围内，接口端没有 ASR 客户端。
 
 RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来源、时间、状态与实际文本；成功后写同名 .txt，失败／静音不进入语义解析。ParseTask 使用 audio:+segment_id、原会话／上下文与配置白名单，结果写同名 .parse.json。只有真实模型返回的内容才会保存；该结果不等于已准备、确认或执行任务。当前按独立单句处理，澄清问题只输出供交互层使用。
 
@@ -235,7 +235,7 @@ python -m ai_edge.asr_node --ros-args \
 
 路径不同的机器替换实际环境与模型目录；也可设置 model_path:=iic/SenseVoiceSmall 按需下载到用户缓存。模型约 936 MB，首次下载／加载完成前状态为 STARTING，日志提示“FunASR 模型已就绪”后再发起录音。使用 python -m 是为了明确使用安装了 FunASR 的环境；由系统 Python 生成的 ros2 run 脚本未必能访问虚拟环境。代码仍注册 asr_node 的 ROS 可执行入口。
 
-终端二启动 AI 编排。当前先只完成 ASR，关闭尚未接入模型的语义步骤：
+终端二启动 AI 编排。只验收 ASR 时关闭语义步骤；完整语义链路见下一节：
 
 ```bash
 cd ~/ai_interaction_ws
@@ -246,7 +246,7 @@ ros2 run ai_edge audio_processing_node --ros-args \
   -p enable_semantic:=false
 ```
 
-接收节点、麦克风发送和开始／停止录音按前文运行。实际识别完成后收到 /ai/asr_text，WAV 旁生成同名 .txt，阶段为 ASR_COMPLETED。未来接入 /ai/parse_task 后，恢复 enable_semantic:=true（默认值）并配置真实工位／物料白名单；没有语义模型时不要把其等待失败误认为 ASR 失败。
+接收节点、麦克风发送和开始／停止录音按前文运行。实际识别完成后收到 /ai/asr_text，WAV 旁生成同名 .txt，阶段为 ASR_COMPLETED。启动下文的 /ai/parse_task 后，恢复 enable_semantic:=true（默认值）并配置真实工位／物料白名单；没有语义模型时不要把其等待失败误认为 ASR 失败。
 
 FunASR 服务参数：audio_root、model_path、device（默认 cpu）、language（默认 zh）、ncpu（默认 4）、recognition_timeout（默认 25 秒，范围 (0,300]）。编排器 asr_timeout 默认 30 秒，应大于服务端等待上限并留通信余量。模型只加载一次，推理在工作线程执行；有活动推理时新请求返回 ASR_BUSY。超时不生成文字，底层线程未结束时仍保持忙碌，不让新推理无限排队。仅全零 PCM 或模型未返回有效文字时报告 NO_SPEECH；模型未提供可校验置信度，使用 -1，不伪造分数。服务失败后节点继续运行。
 
@@ -257,3 +257,64 @@ FunASR 服务参数：audio_root、model_path、device（默认 cpu）、languag
 2026-11-01 实测：WSL Ubuntu-22.04、Humble、ros2_audio/FunASR 1.4.19、CPU 上从真实录音识别出“喂喂喂，你好你好，123123。”，已验证接口交接→真实 ASR→文字保存、静音、缺文件、错误格式、模型就绪状态，以及推理期间可视化查询不被阻塞。语义阶段仍采用临时契约服务验证，未实现真实 LLM 推理。
 
 实现依据：[FunASR](https://github.com/modelscope/FunASR)、[SenseVoice](https://github.com/FunAudioLLM/SenseVoice)。
+
+### 使用 Ollama 千问 2B 完成语义解析
+
+在已安装模型的 WSL 中，默认使用 `qwen3.5:2b`，不需要切换到 4B，也不需要额外安装 Ollama Python SDK。Ollama HTTP 仅在 AI 模型适配器内部使用；接口端、AI 编排与可视化端仍通过 ROS 2 通信。
+
+先按上节更新并构建，在每个终端加载 `/opt/ros/humble/setup.bash` 和工作空间 `install/setup.bash`。先确认服务可达：
+
+```bash
+ollama list
+curl http://127.0.0.1:11434/api/version
+# 仅当服务未运行时，在独立终端执行；已有服务时无需重复启动
+ollama serve
+```
+
+保留上节的 ASR 节点，另开终端启动语义节点：
+
+```bash
+cd ~/ai_interaction_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run ai_edge parse_task_node --ros-args -p model:=qwen3.5:2b
+```
+
+停止之前设置了 enable_semantic:=false 的编排节点，然后只启动一个开启语义的编排节点：
+
+```bash
+ros2 run ai_edge audio_processing_node --ros-args \
+  -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
+  -p enable_semantic:=true \
+  -p parse_timeout:=120.0 \
+  -p allowed_station_ids:="[station_a, station_b]" \
+  -p allowed_object_ids:="[box_1]"
+```
+
+白名单必须替换为项目真实工位／物料；空白名单不会自动放行任意模型参数。接收节点、真实麦克风节点以及开始／停止录音命令保持原样，分别在其他终端运行。完整链路为：麦克风 → 接口端保存 WAV → AI 编排 → FunASR → 千问 2B → 同名 `.txt` 与 `.parse.json`。可视化继续订阅 `/ai/audio_state`、`/ai/asr_text`、`/ai/parse_result`，晚加入时调用 `/ai/query_audio`。
+
+不录音也能单独验证真实语义 Action（示例白名单）：
+
+```bash
+ros2 action send_goal /ai/parse_task robot_interfaces/action/ParseTask \
+  "{request_id: 'parse-demo-001', session_id: 'demo-session', input_id: 'text:001', input_context_id: 'demo-context', text: '导航到station_b，不需要返回', allowed_station_ids: [station_a, station_b], allowed_object_ids: [box_1]}" \
+  --feedback
+```
+
+正常返回 Action SUCCEEDED、success=true、outcome=READY、destination_station_id=station_b。将文字换成“把box_1送到station_b”时应得到 NEED_CLARIFICATION、missing_fields=[pickup_station_id]；换成天气闲聊则 UNSUPPORTED/ABORTED。每次测试使用新的 request_id/input_id。单独调用 Action 只返回 Result/Feedback；音频编排才负责落盘并广播 TaskParseReport。
+
+| 模块 | 职责 |
+|---|---|
+| `semantic_prompt.py` | 任务抽取提示词与少量示例 |
+| `ollama_backend.py` | 调用本地 `/api/chat`，默认关闭 thinking、要求 JSON schema |
+| `semantic_contract.py` | 独立检查类型、工位／物料白名单、互斥字段、缺参 |
+| `semantic_input.py` | Goal 来源、历史、部分候选及输入总量校验 |
+| `parse_task_node.py` | ROS Action、反馈、并发拒绝、取消与超时 |
+
+节点参数为 model（qwen3.5:2b）、ollama_url（http://127.0.0.1:11434）、request_timeout（90.0 秒，范围 (0,290]）。冷启动可能需要加载模型，编排侧 parse_timeout 推荐 120 秒，应大于服务端等待上限；原默认 30 秒保持兼容。单模型只处理一条请求，并发 Goal 被拒并广播 LLM_BUSY 回执。取消或超时后立即结束 ROS 等待，底层 HTTP 返回前保持忙碌并丢弃迟到内容，不自动重试。
+
+UNKNOWN/不支持、缺参、未知 ID、无效 JSON、连接失败均不生成完整可执行候选。所有 ID 由程序关联，不交给模型生成。当前音频流程仍按独立单句处理；直接调用 Action 时可显式传入同一会话上下文的 context 和 partial_candidate，不自动记忆跨轮历史。查询、确认、取消等业务命令应由交互层分流，模型解析不能代替这些服务。READY 也必须经过任务准备和用户确认后才能执行。
+
+规则校验回归（无需模型）：`python3 -m unittest discover -s src/ai_edge/test -v`。模型结构化输出和思考开关依据 [Ollama Chat API](https://docs.ollama.com/api/chat)、[结构化输出](https://docs.ollama.com/capabilities/structured-outputs)。
+
+2026-11-02 实测：WSL Ubuntu-22.04/Humble 临时工作空间 `/tmp/ai-ollama-AGikMA` 构建通过；本机 Ollama 0.40.13 的 `qwen3.5:2b` 真实推理通过导航、搬运并返回、缺取货工位澄清、不支持输入，以及 ROS Action 并发拒绝、取消、超时、服务连接失败、模型不存在和恢复测试。已有真实录音经 FunASR 识别为“喂喂喂，你好你好，123123。”，2B 正确判为不支持的任务；同名文本／解析文件、状态广播和晚加入查询均验证通过。16 项独立规则／响应校验测试通过。临时音频输出已清理，原录音保留；本次未验收香橙派硬件、可视化界面或机器人执行。

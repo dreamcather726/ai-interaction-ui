@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'audio_processing_node = ai_edge.audio_processing_node:main',
             'asr_node = ai_edge.asr_node:main',
+            'parse_task_node = ai_edge.parse_task_node:main',
         ],
     },
 )
