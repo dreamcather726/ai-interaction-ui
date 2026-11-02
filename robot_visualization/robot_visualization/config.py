@@ -6,6 +6,8 @@ from pathlib import Path
 
 from rclpy.parameter import Parameter
 
+from ai_edge.asr.model_paths import default_model_path
+
 
 @dataclass(frozen=True)
 class DashboardConfig:
@@ -22,14 +24,11 @@ class DashboardConfig:
 
     @classmethod
     def from_node(cls, node):
-        model = (
-            Path.home()
-            / ".cache/modelscope/models/iic--SenseVoiceSmall/snapshots/master"
-        )
+        model = default_model_path()
         python = Path.home() / "venvs/ros2_audio/bin/python"
         defaults = {
             "audio_root": str(Path.home() / "ai_interaction_ws/received_audio"),
-            "model_path": str(model) if model.is_dir() else "iic/SenseVoiceSmall",
+            "model_path": str(model),
             "asr_python": str(python) if python.is_file() else sys.executable,
             "model": "qwen3.5:2b",
             "ollama_url": "http://127.0.0.1:11434",

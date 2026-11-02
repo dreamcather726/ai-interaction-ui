@@ -16,6 +16,7 @@ from rclpy.task import Future
 from ai_edge.asr.asr_audio import read_asr_request
 from ai_edge.asr.asr_health import ASRHealth
 from ai_edge.asr.funasr_backend import ASRError, FunASRBackend
+from ai_edge.asr.model_paths import default_model_path
 from robot_interfaces.msg import RecognizedText
 from robot_interfaces.srv import RecognizeAudio
 
@@ -27,7 +28,7 @@ class ASRNode(Node):
         super().__init__("asr_node")
         for name, value in (
             ("audio_root", "received_audio"),
-            ("model_path", "iic/SenseVoiceSmall"),
+            ("model_path", str(default_model_path())),
             ("device", "cpu"),
             ("language", "zh"),
             ("ncpu", 4),

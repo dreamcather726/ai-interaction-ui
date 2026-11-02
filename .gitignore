@@ -1,0 +1,11 @@
+# 本地模型权重与下载缓存；目录说明可以提交。
+/models/*
+!/models/README.md
+
+# ROS 构建输出与运行数据。
+/build/
+/install/
+/log/
+/received_audio/
+__pycache__/
+*.py[cod]

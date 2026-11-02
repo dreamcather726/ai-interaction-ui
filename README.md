@@ -219,7 +219,7 @@ ros2 run ai_edge audio_processing_node --ros-args \
 
 audio_root 必须覆盖接口保存目录，AI 端会拒绝目录外文件；白名单示例须换成项目真实配置。真实麦克风发送和开始／停止调用方式保持不变。只接收存档、不转交时，接口节点设置 `-p auto_forward:=false`。
 
-AI 端的 audio_pipeline.py 调用 `/ai/recognize_audio`（RecognizeAudio Service）和 `/ai/parse_task`（ParseTask Action）。ASR 已接入 FunASR/SenseVoiceSmall，语义解析由下文的 Ollama/qwen3.5:2b 提供；模型权重缓存于运行机器，不作为源码提交。语音识别及后续处理都在 ai_edge 职责范围内，接口端没有 ASR 客户端。
+AI 端的 audio_pipeline.py 调用 `/ai/recognize_audio`（RecognizeAudio Service）和 `/ai/parse_task`（ParseTask Action）。ASR 已接入 FunASR/SenseVoiceSmall，语义解析由下文的 Ollama/qwen3.5:2b 提供；ASR 权重放在本仓库的 `models/SenseVoiceSmall`，不作为源码提交。语音识别及后续处理都在 ai_edge 职责范围内，接口端没有 ASR 客户端。
 
 RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来源、时间、状态与实际文本；成功后写同名 .txt，失败／静音不进入语义解析。ParseTask 使用 audio:+segment_id、原会话／上下文与配置白名单，结果写同名 .parse.json。只有真实模型返回的内容才会保存；该结果不等于已准备、确认或执行任务。当前按独立单句处理，澄清问题只输出供交互层使用。
 
@@ -289,19 +289,19 @@ colcon build --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
 ```
 
-终端一启动 ASR。本机已确认可用的环境是 ~/venvs/ros2_audio，Python 3.10.12；模型已缓存到下面的实际路径：
+终端一启动 ASR。先按 [本地模型说明](models/README.md) 准备完整模型；下面假设仓库位于工作空间的 `src`，并使用已安装 FunASR 的系统 Python：
 
 ```bash
 cd ~/ai_interaction_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-ros2 run --prefix "$HOME/venvs/ros2_audio/bin/python" ai_edge asr_node --ros-args \
+ros2 run --prefix /usr/bin/python3 ai_edge asr_node --ros-args \
   -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
-  -p model_path:=/home/tao/.cache/modelscope/models/iic--SenseVoiceSmall/snapshots/master \
+  -p model_path:="$PWD/src/models/SenseVoiceSmall" \
   -p device:=cpu
 ```
 
-路径不同的机器替换实际环境与模型目录；也可设置 model_path:=iic/SenseVoiceSmall 按需下载到用户缓存。模型约 936 MB，首次下载／加载完成前状态为 STARTING，日志提示“FunASR 模型已就绪”后再发起录音。`--prefix` 让 ros2 run 使用已安装 FunASR 的虚拟环境解释器执行节点入口，无需激活环境；仅激活环境不一定能改变已构建脚本的解释器。若构建节点所用的 Python 本身已安装 FunASR，可省略 --prefix，直接运行 `ros2 run ai_edge asr_node`。
+路径不同的机器替换实际模型目录。默认从项目本地目录加载，不自动使用用户缓存；模型约 936 MB，只有完整的 `model.pt` 才能用于初始化，`.incomplete` 不能替代权重。日志提示“FunASR 模型已就绪”后再发起录音。`--prefix` 让 ros2 run 使用指定 Python 执行节点入口；若构建节点所用的 Python 本身已安装 FunASR，可省略它。
 
 2026-11-02 已在 WSL Humble 隔离 ROS Domain 中实际通过 ros2 run 启动五个节点，并确认上述 ASR 命令加载真实模型后就绪；测试进程均已退出，本次没有启动麦克风录音。
 

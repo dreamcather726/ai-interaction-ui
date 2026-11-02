@@ -1,7 +1,11 @@
 """FunASR 模型适配层：只负责模型加载和真实 PCM 转文字。"""
 
+import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
+
+from ai_edge.asr.model_paths import default_model_path
 
 
 class ASRError(RuntimeError):
@@ -24,13 +28,13 @@ class FunASRBackend:
 
     def __init__(
         self,
-        model="iic/SenseVoiceSmall",
+        model=None,
         device="cpu",
         language="zh",
         ncpu=4,
         progress=None,
     ):
-        self.model_name = model
+        self.model_name = str(default_model_path() if model is None else model)
         self.device = device
         self.language = language
         self.ncpu = ncpu
@@ -39,6 +43,15 @@ class FunASRBackend:
 
     def load(self):
         """加载官方集成模型；权重缓存留在运行机，不进入 Git 仓库。"""
+        model_dir = Path(self.model_name).expanduser()
+        checkpoint = None
+        if model_dir.is_dir():
+            checkpoint = self._local_checkpoint(model_dir)
+        elif model_dir.is_absolute():
+            raise ASRError(
+                "ASR_MODEL_INCOMPLETE",
+                f"本地模型目录不存在：{model_dir}。请将完整模型放入项目 models/SenseVoiceSmall",
+            )
         self.progress("正在导入 FunASR 及其依赖（PyTorch、音频处理库等）……")
         try:
             from funasr import AutoModel
@@ -51,18 +64,67 @@ class FunASRBackend:
                 f"FunASR 依赖导入成功；正在初始化模型 {self.model_name}，"
                 f"device={self.device}；缓存缺失时由模型库下载权重"
             )
-            self.model = AutoModel(
+            options = {}
+            if checkpoint is not None:
+                # 显式传入权重；部分 FunASR 版本缺少文件时仍会创建随机初始化模型。
+                options["init_param"] = str(checkpoint)
+            model = AutoModel(
                 model=self.model_name,
                 device=self.device,
                 ncpu=self.ncpu,
                 trust_remote_code=False,
                 disable_update=True,
                 disable_pbar=True,
+                ignore_init_mismatch=False,
+                **options,
             )
+            if checkpoint is None:
+                resolved = getattr(model, "kwargs", {}).get("init_param")
+                if not resolved:
+                    raise ASRError(
+                        "ASR_MODEL_INCOMPLETE",
+                        "FunASR 没有提供已加载的预训练权重路径，模型不能报告就绪",
+                    )
+                checkpoint = Path(resolved)
+            self._require_checkpoint(checkpoint)
+            self.model = model
+            self.progress(f"预训练权重已加载：{checkpoint}")
+        except ASRError:
+            raise
         except Exception as exc:
             raise ASRError(
                 "ASR_MODEL_UNAVAILABLE", f"FunASR 模型加载失败：{exc}"
             ) from exc
+
+    def _local_checkpoint(self, model_dir):
+        """根据官方清单查找权重；只有下载目录不代表模型已完整。"""
+        checkpoint_name = "model.pt"
+        manifest = model_dir / "configuration.json"
+        if manifest.is_file():
+            try:
+                metadata = json.loads(manifest.read_text(encoding="utf-8"))
+                checkpoint_name = metadata.get("file_path_metas", {}).get(
+                    "init_param", checkpoint_name
+                )
+                if not isinstance(checkpoint_name, str) or not checkpoint_name:
+                    raise ValueError("init_param 必须是非空权重路径")
+            except (OSError, ValueError, AttributeError) as exc:
+                raise ASRError(
+                    "ASR_MODEL_UNAVAILABLE", f"模型文件清单无效：{manifest}；{exc}"
+                ) from exc
+        checkpoint = model_dir / checkpoint_name
+        self._require_checkpoint(checkpoint)
+        return checkpoint
+
+    @staticmethod
+    def _require_checkpoint(checkpoint):
+        if not checkpoint.is_file() or checkpoint.stat().st_size == 0:
+            partial = checkpoint.with_name(checkpoint.name + ".incomplete")
+            detail = f"；发现未完成下载：{partial}" if partial.exists() else ""
+            raise ASRError(
+                "ASR_MODEL_INCOMPLETE",
+                f"模型权重缺失或为空：{checkpoint}{detail}。请完成模型下载后重启 ASR",
+            )
 
     def transcribe(self, pcm):
         """输入经校验的 PCM16；只去除模型标签，不改写识别出的文字。"""
