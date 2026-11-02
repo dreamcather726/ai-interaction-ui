@@ -9,6 +9,7 @@ from ai_edge.semantic.semantic_contract import (
 
 def read_parse_goal(goal):
     """限制总输入大小，检查来源与续轮条件，保持调用方的上下文边界。"""
+    # 来源标识、输入文字与时间戳。
     for field in ("request_id", "session_id", "input_id", "input_context_id"):
         value = getattr(goal, field)
         if not value.strip() or len(value) > 256:
@@ -19,6 +20,8 @@ def read_parse_goal(goal):
         raise SemanticError("INVALID_REQUEST", "待解析文字不能为空且不能超过 4096 字符")
     if goal.stamp.sec < 0 or not 0 <= goal.stamp.nanosec < 10**9:
         raise SemanticError("INVALID_REQUEST", "请求时间戳不合法")
+
+    # 本轮允许使用的工位和物料。
     stations, objects = list(goal.allowed_station_ids), list(goal.allowed_object_ids)
     for values in (stations, objects):
         if (
@@ -32,6 +35,8 @@ def read_parse_goal(goal):
             raise SemanticError(
                 "INVALID_REQUEST", "白名单不能含重复、空白标识或超长条目"
             )
+
+    # 历史对话转换与总输入大小限制。
     context = []
     for turn in goal.context:
         if turn.role not in (turn.USER, turn.ASSISTANT) or not turn.text.strip():
@@ -47,6 +52,8 @@ def read_parse_goal(goal):
         or sum(len(t["text"]) for t in context) + len(goal.text) > 12000
     ):
         raise SemanticError("INVALID_REQUEST", "对话超过 20 条或总文字超过 12000 字符")
+
+    # 部分候选必须与显式历史一起使用。
     source = goal.partial_candidate
     partial = candidate_payload(source)
     checked = validate_candidate(partial, stations, objects)
@@ -54,6 +61,7 @@ def read_parse_goal(goal):
         raise SemanticError(
             "INVALID_REQUEST", "部分候选只能在显式提供同一上下文历史的澄清续轮使用"
         )
+
     return (
         goal.text,
         stations,

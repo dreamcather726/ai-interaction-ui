@@ -28,7 +28,9 @@ class DialogueTests(unittest.TestCase):
             return_station_id="",
         )
         self.answer = validate_candidate(self.partial, self.stations, self.objects)
-        self.store.remember(self.key, "去 A 点拿东西，然后到 B 点放下", self.answer, 100)
+        self.store.remember(
+            self.key, "去 A 点拿东西，然后到 B 点放下", self.answer, 100
+        )
 
     def get(self, key=None, captured=101, stations=None):
         return self.store.get(
@@ -85,7 +87,10 @@ class DialogueTests(unittest.TestCase):
 
     def test_unknown_reply_does_not_complete_old_task(self):
         unknown = dict(
-            self.partial, task_type="UNKNOWN", pickup_station_id="", dropoff_station_id=""
+            self.partial,
+            task_type="UNKNOWN",
+            pickup_station_id="",
+            dropoff_station_id="",
         )
         answer = validate_candidate(
             reconcile_candidate(unknown, self.partial), self.stations, self.objects

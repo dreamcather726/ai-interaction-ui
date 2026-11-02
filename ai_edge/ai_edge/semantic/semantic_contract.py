@@ -11,6 +11,7 @@ class SemanticError(ValueError):
         self.code = code
 
 
+# 模型输入和输出共用的字段约定。
 ID_FIELDS = (
     "object_id",
     "pickup_station_id",
@@ -50,6 +51,7 @@ def reconcile_candidate(data, partial):
         raise SemanticError(
             "DIALOGUE_CONFLICT", "补充内容改变了原任务类型或返回要求，请先说“重新开始”"
         )
+
     merged = dict(data)
     for field in ID_FIELDS:
         previous, current = partial[field], data[field].strip()
@@ -71,6 +73,7 @@ class SemanticAnswer:
 
 def validate_candidate(data, stations, objects):
     """不信任 JSON schema 的强制效果，再检查类型、白名单和互斥字段。"""
+    # 输出结构与字段类型。
     if not isinstance(data, dict) or set(data) != set(SCHEMA["required"]):
         raise SemanticError("INVALID_MODEL_OUTPUT", "模型输出字段不完整或含额外字段")
     if data["task_type"] not in ("UNKNOWN", "NAVIGATE", "TRANSPORT"):
@@ -79,6 +82,8 @@ def validate_candidate(data, stations, objects):
         not isinstance(data[f], str) or len(data[f]) > 128 for f in ID_FIELDS
     ):
         raise SemanticError("INVALID_MODEL_OUTPUT", "模型字段类型或标识长度不符合约定")
+
+    # 规范化标识，单独处理不支持的任务。
     candidate = dict(data)
     for field in ID_FIELDS:
         candidate[field] = candidate[field].strip()
@@ -87,12 +92,16 @@ def validate_candidate(data, stations, objects):
         if candidate["return_required"] or any(candidate[f] for f in ID_FIELDS):
             raise SemanticError("INVALID_MODEL_OUTPUT", "不支持的任务不能携带运动参数")
         return SemanticAnswer(candidate, unsupported=True)
+
+    # 已填写的标识必须属于本轮白名单。
     for field in ID_FIELDS:
         value = candidate[field]
         allowed = objects if field == "object_id" else stations
         if value and value not in allowed:
             code = "UNKNOWN_OBJECT" if field == "object_id" else "UNKNOWN_STATION"
             raise SemanticError(code, f"字段 {field} 的标识不在本轮白名单中：{value}")
+
+    # 按任务类型检查必填字段和互斥字段。
     if task == "NAVIGATE":
         required = ["destination_station_id"]
         forbidden = ("object_id", "pickup_station_id", "dropoff_station_id")
@@ -105,6 +114,8 @@ def validate_candidate(data, stations, objects):
         raise SemanticError("INVALID_MODEL_OUTPUT", "模型返回了互斥的任务字段")
     if candidate["return_required"]:
         required.append("return_station_id")
+
+    # 由规则计算实际缺项和追问。
     missing = tuple(field for field in required if not candidate[field])
     labels = {
         "object_id": "物料编号",

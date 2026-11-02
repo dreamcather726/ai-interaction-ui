@@ -39,6 +39,8 @@ class AudioPipeline:
     def __init__(self, node, publish_receipt):
         self.node = node
         self.publish_receipt = publish_receipt
+
+        # 声明并检查节点参数。
         node.declare_parameter("enable_semantic", True)
         node.declare_parameter("asr_timeout", 30.0)
         node.declare_parameter("parse_timeout", 30.0)
@@ -52,15 +54,20 @@ class AudioPipeline:
         self.dialogues = DialogueStore(
             timeout=node.get_parameter("clarification_timeout").value
         )
+
         # 模型调用只保留在 AI 端；接口端不依赖这些客户端。
         self.asr = node.create_client(RecognizeAudio, "/ai/recognize_audio")
         self.parser = ActionClient(node, ParseTask, "/ai/parse_task")
         self.text_pub = node.create_publisher(RecognizedText, "/ai/asr_text", 10)
+
+        # 本轮队列、展示快照与状态机定时器。
         self.queue = AudioJobQueue()
         self.visualization = AudioVisualization(node)
         self.active = None
         self.clock = Clock(clock_type=ClockType.STEADY_TIME)
         self.timer = node.create_timer(0.05, self.tick, clock=self.clock)
+
+    # 业务回执与音频入队。
 
     def report(self, job, operation, success, message, code=""):
         """统一发布阶段状态；保留原始请求 ID 和稳定错误码。"""
@@ -94,6 +101,8 @@ class AudioPipeline:
                 "音频已进入 AI 队列",
             )
         return outcome
+
+    # 阶段状态、异常处理与异步调度。
 
     def stage(self, name, timeout):
         """记录当前阶段与单调时钟截止时间。"""
@@ -164,6 +173,7 @@ class AudioPipeline:
         job = self.active
         stage = job["stage"]
         now = time.monotonic()
+
         # 超时只结束本次等待，不能把未知结果当作成功或自动重试。
         if now >= job["deadline"]:
             if stage == "asr_result":
@@ -180,6 +190,7 @@ class AudioPipeline:
             )
             self.fail(code, "AI 处理阶段等待超时；结果尚未确认，不自动重试")
             return
+
         if now - job["last_progress"] >= 10:
             job["last_progress"] = now
             name = "语义解析" if stage.startswith("parse") else "语音识别"
@@ -188,6 +199,7 @@ class AudioPipeline:
                 f"本阶段已等待 {now - job['stage_started']:.0f} 秒，"
                 f"距离等待超时还有 {job['deadline'] - now:.0f} 秒"
             )
+
         # 依次推进：等待 ASR → 识别结果 → 等待语义模型 → Goal → 最终结果。
         if stage == "asr_wait" and self.asr.service_is_ready():
             msg = job["msg"]
@@ -229,6 +241,8 @@ class AudioPipeline:
         elif stage == "parse_result" and job["future"].done():
             self.accept_parse(job["future"].result())
 
+    # 语义请求组装与对话控制。
+
     @staticmethod
     def dialogue_key(job):
         msg = job["msg"]
@@ -248,6 +262,7 @@ class AudioPipeline:
         goal.allowed_object_ids = (
             self.node.get_parameter_or("allowed_object_ids").value or []
         )
+
         captured = msg.capture_started_at.sec * 10**9 + msg.capture_started_at.nanosec
         pending = self.dialogues.get(
             self.dialogue_key(job),
@@ -302,6 +317,8 @@ class AudioPipeline:
             SimpleNamespace(status=GoalStatus.STATUS_CANCELED, result=result)
         )
 
+    # 识别结果和语义结果的接收、校验与发布。
+
     def accept_asr(self, result):
         """先独立校验 ASR 结果，再保存文字并进入语义阶段。"""
         job = self.active
@@ -310,6 +327,7 @@ class AudioPipeline:
         except ResultValidationError as exc:
             self.fail(exc.code, str(exc))
             return
+
         self.text_pub.publish(result)
         self.visualization.asr_result(result)
         if not valid:
@@ -319,6 +337,7 @@ class AudioPipeline:
         self.node.get_logger().info(f"识别文字已保存：{text_path}")
         job["text"] = result.text
         self.report(job, "/ai/recognize_audio", True, result.text)
+
         if not self.node.get_parameter("enable_semantic").value:
             self.visualization.state(
                 job,
@@ -327,6 +346,7 @@ class AudioPipeline:
             )
             self.active = None
             return
+
         command = dialogue_command(result.text)
         if command:
             self.finish_dialogue_command(command)
@@ -343,12 +363,14 @@ class AudioPipeline:
         except ResultValidationError as exc:
             self.fail(exc.code, str(exc))
             return
+
         result = wrapped.result
         try:
             self.update_dialogue(job, result, stations, objects)
         except SemanticError as exc:
             self.fail(exc.code, str(exc))
             return
+
         path = save_parse_result(job["path"], result)
         self.visualization.parse_result(result)
         state = (
@@ -369,6 +391,8 @@ class AudioPipeline:
         )
         self.active = None
 
+    # 跨轮待澄清候选的维护。
+
     def update_dialogue(self, job, result, stations, objects):
         """只有校验通过的缺参结果才进入会话缓存；完整候选不自动执行。"""
         key = self.dialogue_key(job)
@@ -379,7 +403,8 @@ class AudioPipeline:
                 merged = reconcile_candidate(candidate, previous.candidate)
                 if merged != candidate:
                     raise SemanticError(
-                        "DIALOGUE_CONTEXT_LOST", "解析结果遗漏了已有信息，请重新回答追问"
+                        "DIALOGUE_CONTEXT_LOST",
+                        "解析结果遗漏了已有信息，请重新回答追问",
                     )
             answer = validate_candidate(candidate, stations, objects)
             if result.outcome == result.NEED_CLARIFICATION:
@@ -406,6 +431,8 @@ class AudioPipeline:
             self.dialogues.forget(key)
         elif previous is not None:
             result.message += "；上一轮待补充任务仍保留，可继续回答或说“重新开始”"
+
+    # 退出清理。
 
     def close(self):
         """停止本地调度，并尝试取消尚在进行的语义解析。"""

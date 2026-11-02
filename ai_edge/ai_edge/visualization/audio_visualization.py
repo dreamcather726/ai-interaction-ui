@@ -14,16 +14,20 @@ class AudioVisualization:
         self.node = node
         self.boot_id = uuid4().hex
         self.records = {}
+
         self.states = node.create_publisher(AudioProcessingState, "/ai/audio_state", 10)
         self.parses = node.create_publisher(TaskParseReport, "/ai/parse_result", 10)
         self.query_service = node.create_service(
             QueryAudio, "/ai/query_audio", self.query
         )
 
+    # 阶段广播：关联来源、递增序号并更新快照。
+
     def state(self, job, stage, message, error_code=""):
         source = job["msg"]
         record = self.records.setdefault(source.request_id, {})
         previous = record.get("state")
+
         result = AudioProcessingState()
         result.stamp = self.node.get_clock().now().to_msg()
         result.source_node = self.node.get_fully_qualified_name()
@@ -32,6 +36,7 @@ class AudioVisualization:
         for name in ("request_id", "session_id", "segment_id", "input_context_id"):
             setattr(result, name, getattr(source, name))
         result.audio_path = str(job["path"])
+
         phase = job.get("stage", "queued")
         result.operation = (
             "/ai/parse_task"
@@ -43,8 +48,11 @@ class AudioVisualization:
             )
         )
         result.stage, result.message, result.error_code = stage, message, error_code
+
         record["state"] = result
         self.states.publish(result)
+
+    # 识别与解析结果快照。
 
     def asr_result(self, result):
         if result.request_id in self.records:
@@ -57,6 +65,8 @@ class AudioVisualization:
         self.records[result.request_id]["parse"] = report
         self.parses.publish(report)
 
+    # 按请求 ID 查询已有结果。
+
     def query(self, request, response):
         response.stamp = self.node.get_clock().now().to_msg()
         response.request_id = request.request_id
@@ -66,6 +76,7 @@ class AudioVisualization:
                 "查询 ID 不能为空",
             )
             return response
+
         record = self.records.get(request.target_request_id)
         if record is None:
             response.error_code, response.message = (
@@ -73,6 +84,7 @@ class AudioVisualization:
                 "当前进程没有该音频的处理记录",
             )
             return response
+
         response.success = response.found = True
         response.message = "已找到音频处理记录；查询成功不代表识别或语义解析成功"
         response.state = deepcopy(record["state"])

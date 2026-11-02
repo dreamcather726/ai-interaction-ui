@@ -75,6 +75,8 @@ def build_messages(text, stations, objects, context, partial):
             "content": SYSTEM_PROMPT + "\nJSON schema:\n" + json.dumps(SCHEMA),
         },
     ]
+
+    # 单轮任务示例。
     for text_example, kind, obj, pickup, dropoff, dest, back, return_to in EXAMPLES:
         sample = dict(
             text=text_example,
@@ -101,6 +103,7 @@ def build_messages(text, stations, objects, context, partial):
                 },
             ]
         )
+
     # 展示真正的续轮输入，帮助模型区分独立名词和对上一轮问题的回答。
     partial_example = dict(
         task_type="TRANSPORT",
@@ -129,6 +132,8 @@ def build_messages(text, stations, objects, context, partial):
             },
         ]
     )
+
+    # 当前请求始终放在示例之后。
     messages.append(
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     )

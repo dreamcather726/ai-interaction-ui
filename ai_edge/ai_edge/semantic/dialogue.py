@@ -48,18 +48,25 @@ class DialogueStore:
         self.timeout, self.limit, self.clock = timeout, limit, clock
         self.pending = OrderedDict()
 
+    # 续轮读取与上下文边界检查。
+
     def get(self, key, captured_at_ns, stations, objects):
         """提问前已开始的录音不能自动作为该问题的回答。"""
         pending = self.pending.get(key)
         if pending is None:
             return None
+
         if self.clock() >= pending.expires_at:
             self.forget(key)
-            raise SemanticError("DIALOGUE_EXPIRED", "补充等待已超时，请重新描述完整任务")
+            raise SemanticError(
+                "DIALOGUE_EXPIRED", "补充等待已超时，请重新描述完整任务"
+            )
         if captured_at_ns < pending.prompted_at_ns:
             raise SemanticError(
-                "CLARIFICATION_NOT_READY", "这段录音开始于追问之前，请看到追问后重新录音回答"
+                "CLARIFICATION_NOT_READY",
+                "这段录音开始于追问之前，请看到追问后重新录音回答",
             )
+
         try:
             validate_candidate(pending.candidate, stations, objects)
         except SemanticError as exc:
@@ -69,16 +76,20 @@ class DialogueStore:
             ) from exc
         return deepcopy(pending)
 
+    # 待补充候选与最近对话的保存。
+
     def remember(self, key, text, answer, prompted_at_ns, previous=None):
         """只保存规则校验后仍缺字段的候选，拒绝静默淘汰其他会话。"""
         if answer.unsupported or not answer.missing_fields:
             raise ValueError("只能保存待澄清候选")
+
         now = self.clock()
         for old_key, item in list(self.pending.items()):
             if old_key != key and item.expires_at <= now:
                 self.forget(old_key)
         if key not in self.pending and len(self.pending) >= self.limit:
             raise SemanticError("DIALOGUE_BUSY", "待补充会话已满，请稍后重新描述任务")
+
         context = list(previous.context) if previous else []
         context.extend(
             [
@@ -93,6 +104,8 @@ class DialogueStore:
             prompted_at_ns,
             now + self.timeout,
         )
+
+    # 单个上下文与整个缓存的清理。
 
     def forget(self, key):
         return self.pending.pop(key, None)

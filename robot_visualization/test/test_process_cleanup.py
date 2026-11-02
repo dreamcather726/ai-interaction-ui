@@ -35,11 +35,14 @@ class ProcessCleanupTests(unittest.TestCase):
             if sig == signal.SIGINT:
                 alive = False
 
-        with contextlib.redirect_stdout(io.StringIO()), patch(
-            "robot_visualization.runtime.supervisor.os.killpg",
-            side_effect=killpg,
-            create=True,
-        ) as send:
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            patch(
+                "robot_visualization.runtime.supervisor.os.killpg",
+                side_effect=killpg,
+                create=True,
+            ) as send,
+        ):
             manager.close()
         self.assertIn(
             (43210, signal.SIGINT), [call.args for call in send.call_args_list]

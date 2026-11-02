@@ -36,27 +36,22 @@ class AudioReceiverNode(Node):
         self.forwarder = AudioForwarder(self)
         self.get_logger().info("音频接收节点已启动：保存后打包转交 ai_edge")
 
-    # 检查音频数据
     def validate_audio(self, msg):
         """委托存储模块校验音频传输数据。"""
         return validate_audio_segment(msg)
 
-    # 保存 PCM 为 WAV
     def save_wav(self, pcm):
         """委托存储模块保存 WAV，返回实际文件路径。"""
         return save_wav(self.output_dir, pcm)
 
-    # 接收音频
     def receive_audio(self, msg):
         """处理一个音频片段，保存成功后提交 AI 端受理。"""
         result = RequestStatus()
-
         result.request_id = msg.request_id
         result.source_node = self.get_name()
         result.operation = "/audio/segments"
 
         try:
-
             # 1. 检查音频
             pcm = self.validate_audio(msg)
 
@@ -71,7 +66,6 @@ class AudioReceiverNode(Node):
             self.get_logger().info(result.message)
 
         except (ValueError, OSError, wave.Error) as e:
-
             # 返回失败结果
             result.success = False
             result.stage = RequestStatus.REJECTED
@@ -82,7 +76,6 @@ class AudioReceiverNode(Node):
 
         # 4. 发布接收回执
         result.stamp = self.get_clock().now().to_msg()
-
         self.receipt_pub.publish(result)
         if result.success:
             self.forwarder.enqueue(msg, file_path)
@@ -96,7 +89,6 @@ def main(args=None):
 
     try:
         rclpy.spin(node)
-
     except KeyboardInterrupt:
         pass
 
