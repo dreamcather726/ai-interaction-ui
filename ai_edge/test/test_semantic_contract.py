@@ -122,7 +122,7 @@ class OllamaEnvelopeTests(unittest.TestCase):
 
         self.backend.post = unexpected
         with self.assertRaises(SemanticError) as caught:
-            self.backend.parse("录" * 4096, ["station_b"], [])
+            self.backend.parse("录" * 16384, ["station_b"], [])
         self.assertEqual(caught.exception.code, "INVALID_REQUEST")
 
 

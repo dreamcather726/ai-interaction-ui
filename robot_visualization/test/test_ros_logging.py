@@ -29,6 +29,7 @@ class ConsoleStatusTests(unittest.TestCase):
             record=Mock(),
             availability=Mock(),
             control=Mock(),
+            draft=Mock(),
         )
         self.node = DashboardNode(self.events)
 

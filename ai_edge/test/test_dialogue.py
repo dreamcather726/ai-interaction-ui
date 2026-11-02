@@ -26,6 +26,7 @@ class DialogueTests(unittest.TestCase):
             destination_station_id="",
             return_required=False,
             return_station_id="",
+            steps=[],
         )
         self.answer = validate_candidate(self.partial, self.stations, self.objects)
         self.store.remember(

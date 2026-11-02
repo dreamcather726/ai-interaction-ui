@@ -21,8 +21,8 @@ def validate_audio_segment(msg):
     if len(pcm) == 0:
         raise ValueError("音频数据为空")
 
-    if len(pcm) > 320000:
-        raise ValueError("音频长度超过10秒限制")
+    if len(pcm) > 9600000:
+        raise ValueError("音频长度超过300秒限制")
 
     if len(pcm) % 2 != 0:
         raise ValueError("PCM数据长度错误")
@@ -41,8 +41,8 @@ def validate_audio_segment(msg):
     if any(t.sec < 0 or not 0 <= t.nanosec < 10**9 for t in stamps):
         raise ValueError("音频时间戳非法")
     start, end, sent = (t.sec * 10**9 + t.nanosec for t in stamps)
-    if not 0 < start < end <= sent or end - start > 10**10:
-        raise ValueError("录音起止时间无效或超过10秒")
+    if not 0 < start < end <= sent or end - start > 300 * 10**9:
+        raise ValueError("录音起止时间无效或超过300秒")
     if abs((end - start) / 10**9 - len(pcm) / 32000) > 0.05:
         raise ValueError("录音时长与音频帧数不一致")
 

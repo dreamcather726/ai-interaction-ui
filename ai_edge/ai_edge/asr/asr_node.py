@@ -32,7 +32,7 @@ class ASRNode(Node):
             ("device", "cpu"),
             ("language", "zh"),
             ("ncpu", 4),
-            ("recognition_timeout", 25.0),
+            ("recognition_timeout", 180.0),
         ):
             self.declare_parameter(name, value)
         self.audio_root = (

@@ -19,7 +19,7 @@ class OllamaBackend:
     """标准库 HTTP 客户端，无需额外安装 ollama Python SDK。"""
 
     def __init__(
-        self, base_url="http://127.0.0.1:11434", model="qwen3.5:2b", timeout=90.0
+        self, base_url="http://127.0.0.1:11434", model="qwen3.5:2b", timeout=290.0
     ):
         parts = urlsplit(base_url)
         if (
@@ -72,7 +72,7 @@ class OllamaBackend:
     def parse(self, text, stations, objects, context=(), partial=None):
         messages = build_messages(text, stations, objects, list(context), partial)
         # UTF-8 字节数是 token 数的保守上界；给消息模板与输出留出上下文余量。
-        if sum(len(item["content"].encode("utf-8")) for item in messages) > 7000:
+        if sum(len(item["content"].encode("utf-8")) for item in messages) > 16000:
             raise SemanticError(
                 "INVALID_REQUEST", "输入、历史和白名单超过本地模型的上下文预算"
             )
@@ -85,14 +85,14 @@ class OllamaBackend:
                 "think": False,
                 "format": SCHEMA,
                 "keep_alive": "5m",
-                "options": {"temperature": 0, "num_predict": 512, "num_ctx": 8192},
+                "options": {"temperature": 0, "num_predict": 16000, "num_ctx": 32768},
             },
         )
         try:
             if data.get("done") is not True or data.get("done_reason") == "length":
                 raise ValueError("模型输出未完整结束")
             content = data["message"]["content"]
-            if not isinstance(content, str) or len(content) > 16384:
+            if not isinstance(content, str) or len(content) > 262144:
                 raise ValueError("模型内容类型或长度不正确")
             candidate = json.loads(content)
         except (KeyError, TypeError, ValueError) as exc:

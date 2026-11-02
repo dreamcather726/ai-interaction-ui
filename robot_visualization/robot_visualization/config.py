@@ -21,6 +21,7 @@ class DashboardConfig:
     objects: list
     start_backend: bool = True
     start_microphone: bool = True
+    max_recording_seconds: float = 120.0
 
     @classmethod
     def from_node(cls, node):
@@ -37,11 +38,14 @@ class DashboardConfig:
             "device": "@DEFAULT_SOURCE@",
             "start_backend": True,
             "start_microphone": True,
+            "max_recording_seconds": 120.0,
         }
         for name, value in defaults.items():
             node.declare_parameter(name, value)
         for name in ("allowed_station_ids", "allowed_object_ids"):
             node.declare_parameter(name, Parameter.Type.STRING_ARRAY)
+        if not 1 <= node.get_parameter("max_recording_seconds").value <= 300:
+            raise ValueError("max_recording_seconds 必须在 1～300 秒之间")
         return cls(
             audio_root=Path(node.get_parameter("audio_root").value)
             .expanduser()
@@ -55,4 +59,5 @@ class DashboardConfig:
             objects=node.get_parameter_or("allowed_object_ids").value or [],
             start_backend=node.get_parameter("start_backend").value,
             start_microphone=node.get_parameter("start_microphone").value,
+            max_recording_seconds=node.get_parameter("max_recording_seconds").value,
         )

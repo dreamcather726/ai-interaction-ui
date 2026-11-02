@@ -7,5 +7,6 @@
 /install/
 /log/
 /received_audio/
+/task_data/
 __pycache__/
 *.py[cod]

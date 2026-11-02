@@ -75,10 +75,10 @@ def read_audio_handoff(request, audio_root):
     # 3. 检查 WAV 文件大小
     # ==================================================
 
-    # 限制单个音频文件最大为 2 MiB
+    # 最长 300 秒 PCM16 的 WAV 文件小于 10 MiB。
     # 防止异常文件占用过多存储空间
-    if path.stat().st_size > 2 * 1024 * 1024:
-        raise ValueError("WAV 文件超过 2 MiB 限制")
+    if path.stat().st_size > 10 * 1024 * 1024:
+        raise ValueError("WAV 文件超过 10 MiB 限制")
 
     # ==================================================
     # 4. 检查音频基本参数
@@ -133,9 +133,9 @@ def read_audio_handoff(request, audio_root):
     if not 0 < start < end <= sent:
         raise ValueError("录音时间顺序错误")
 
-    # 限制单次录音时长不超过 10 秒
-    if end - start > 10**10:
-        raise ValueError("录音时长超过 10 秒")
+    # 录音长度与音频传输接口保持一致。
+    if end - start > 300 * 10**9:
+        raise ValueError("录音时长超过 300 秒")
 
     # ==================================================
     # 6. 打开 WAV 文件并检查文件格式
@@ -173,9 +173,9 @@ def read_audio_handoff(request, audio_root):
         frames = wav.getnframes()
 
         # 16000 帧对应 1 秒音频
-        # 最大 160000 帧对应 10 秒音频
-        if not 0 < frames <= 160000:
-            raise ValueError("WAV 音频时长必须在 0 到 10 秒之间")
+        # 最大 4800000 帧对应 300 秒音频。
+        if not 0 < frames <= 4800000:
+            raise ValueError("WAV 音频时长必须在 0 到 300 秒之间")
 
         # ==================================================
         # 8. 读取 WAV 中的 PCM 原始数据

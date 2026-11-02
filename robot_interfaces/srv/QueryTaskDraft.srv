@@ -1,0 +1,11 @@
+builtin_interfaces/Time stamp
+string request_id
+# Empty means recent drafts; otherwise return the requested draft.
+string draft_id
+---
+builtin_interfaces/Time stamp
+string request_id
+bool success
+string message
+string error_code
+robot_interfaces/TaskPlanDraft[] drafts

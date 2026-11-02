@@ -16,8 +16,10 @@ def read_parse_goal(goal):
             raise SemanticError(
                 "INVALID_REQUEST", f"{field} 不能为空且不能超过 256 字符"
             )
-    if not goal.text.strip() or len(goal.text) > 4096:
-        raise SemanticError("INVALID_REQUEST", "待解析文字不能为空且不能超过 4096 字符")
+    if not goal.text.strip() or len(goal.text) > 16384:
+        raise SemanticError(
+            "INVALID_REQUEST", "待解析文字不能为空且不能超过 16384 字符"
+        )
     if goal.stamp.sec < 0 or not 0 <= goal.stamp.nanosec < 10**9:
         raise SemanticError("INVALID_REQUEST", "请求时间戳不合法")
 
@@ -49,9 +51,9 @@ def read_parse_goal(goal):
         )
     if (
         len(context) > 20
-        or sum(len(t["text"]) for t in context) + len(goal.text) > 12000
+        or sum(len(t["text"]) for t in context) + len(goal.text) > 24000
     ):
-        raise SemanticError("INVALID_REQUEST", "对话超过 20 条或总文字超过 12000 字符")
+        raise SemanticError("INVALID_REQUEST", "对话超过 20 条或总文字超过 24000 字符")
 
     # 部分候选必须与显式历史一起使用。
     source = goal.partial_candidate

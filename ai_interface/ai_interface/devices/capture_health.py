@@ -35,5 +35,9 @@ class MicrophoneHealth:
             else message.FAULT if self.error_code else message.READY
         )
         message.error_code = self.error_code
-        message.message = "录音进程运行中，最多采集十秒" if running else self.message
+        message.message = (
+            f"录音进程运行中，最多采集 {self.node.get_parameter('max_recording_seconds').value:g} 秒"
+            if running
+            else self.message
+        )
         self.publisher.publish(message)

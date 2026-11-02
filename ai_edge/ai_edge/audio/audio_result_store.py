@@ -24,6 +24,10 @@ def save_parse_result(audio_path, result):
             "return_station_id",
         )
     }
+    candidate["steps"] = [
+        {name: getattr(step, name) for name in candidate if name != "steps"}
+        for step in result.candidate.steps
+    ]
     report = {
         name: getattr(result, name)
         for name in ("request_id", "session_id", "input_id", "input_context_id")

@@ -133,6 +133,48 @@ class WindowTests(unittest.TestCase):
         self.app.processEvents()
         self.assertFalse(self.window.isVisible())
 
+    def test_draft_rows_have_variable_length_and_keep_order(self):
+        panel = self.window.draft_panel
+        panel.new()
+        for _ in range(40):
+            panel.add_blank("NAVIGATE")
+        panel.table.item(0, 4).setText("station_a")
+        panel.table.item(1, 4).setText("station_b")
+        self.assertEqual(panel.table.rowCount(), 40)
+        panel.table.selectRow(1)
+        panel.move_step(-1)
+        self.assertEqual(panel.steps()[0]["destination_station_id"], "station_b")
+        panel.remove_step()
+        self.assertEqual(panel.table.rowCount(), 39)
+        self.assertFalse(panel.buttons["confirm"].isEnabled())
+
+    def test_editing_saved_draft_disables_confirmation(self):
+        panel = self.window.draft_panel
+        panel.set_online(True)
+        value = dict(
+            draft_id="draft-one",
+            revision=1,
+            event_seq=1,
+            boot_id="boot-one",
+            state=0,
+            session_id="session",
+            input_context_id="context",
+            source_request_ids=["audio-one"],
+            confirmation_token="token-one",
+            summary="导航到 station_a",
+            candidate=dict(task_type=1, destination_station_id="station_a"),
+        )
+        panel.receive(dict(operation="save", success=True, draft=value))
+        self.assertTrue(panel.buttons["confirm"].isEnabled())
+        panel.table.item(0, 4).setText("station_b")
+        self.assertFalse(panel.buttons["confirm"].isEnabled())
+        received = []
+        panel.command_requested.connect(
+            lambda operation, body: received.append((operation, body))
+        )
+        panel.confirm()
+        self.assertEqual(received, [])
+
 
 if __name__ == "__main__":
     unittest.main()

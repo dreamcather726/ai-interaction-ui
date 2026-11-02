@@ -16,6 +16,7 @@ from ai_edge.audio.audio_result_validation import (
     validate_parse_result,
 )
 from ai_edge.semantic.dialogue import DialogueStore, dialogue_command
+from ai_edge.semantic.ros_candidates import assign_candidate
 from ai_edge.semantic.semantic_contract import (
     SemanticError,
     candidate_payload,
@@ -42,8 +43,8 @@ class AudioPipeline:
 
         # 声明并检查节点参数。
         node.declare_parameter("enable_semantic", True)
-        node.declare_parameter("asr_timeout", 30.0)
-        node.declare_parameter("parse_timeout", 30.0)
+        node.declare_parameter("asr_timeout", 185.0)
+        node.declare_parameter("parse_timeout", 300.0)
         node.declare_parameter("clarification_timeout", 300.0)
         node.declare_parameter("allowed_station_ids", Parameter.Type.STRING_ARRAY)
         node.declare_parameter("allowed_object_ids", Parameter.Type.STRING_ARRAY)
@@ -272,14 +273,7 @@ class AudioPipeline:
         )
         job["dialogue"] = pending
         if pending is not None:
-            goal.partial_candidate.stamp = goal.stamp
-            types = {"NAVIGATE": 1, "TRANSPORT": 2}
-            for field, value in pending.candidate.items():
-                setattr(
-                    goal.partial_candidate,
-                    field,
-                    types[value] if field == "task_type" else value,
-                )
+            assign_candidate(goal.partial_candidate, pending.candidate, goal.stamp)
             turns = []
             for entry in pending.context:
                 turn = DialogueTurn()

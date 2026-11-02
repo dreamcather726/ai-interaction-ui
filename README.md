@@ -2,7 +2,7 @@
 
 ROS 2 Humble AI 交互项目。程序与模型部署在 PC 的 Linux 虚拟机中，模块之间使用 ROS 2 Topic、Service 和 Action 通信。
 
-当前已实现 PySide6 语音工作台、一键启动、录音按键控制、录音接收转交、真实 FunASR 识别和 Ollama 千问 2B 语义解析。播报和机器人执行节点尚未实现，界面只展示已接入的功能。
+当前已实现 PySide6 语音工作台、一键启动、长录音、真实 FunASR 识别、Ollama 语义解析，以及可变步骤草稿的编辑、保存、人工确认和取消。播报和机器人执行节点尚未实现，界面只展示已接入的功能。
 
 | 目录 | 内容 |
 |---|---|
@@ -12,7 +12,7 @@ ROS 2 Humble AI 交互项目。程序与模型部署在 PC 的 Linux 虚拟机�
 | `robot_visualization` | PySide6 工作台、ROS 状态订阅、录音按钮和后端进程管理 |
 | `docs/接口协议.md` | 接口清单、字段约定、成功／失败回复及验收要求 |
 
-接口版本：`0.2.0`。每条自定义消息及 Service／Action 各部分均有 `builtin_interfaces/Time stamp`；每个业务响应至少有 `bool success` 和 `string message`，同时提供 `error_code` 与关联 ID。包含运行／部件状态、任务进度、软件急停及复位、错误报告和心跳；地图、定位、路径、相机、关节、电池和诊断复用标准 ROS 2 类型，话题与 QoS 见协议。新增字段要求所有接口使用方同步重建。
+接口版本：`0.3.0`。每条自定义消息及 Service／Action 各部分均有 `builtin_interfaces/Time stamp`；每个业务响应至少有 `bool success` 和 `string message`，同时提供 `error_code` 与关联 ID。包含运行／部件状态、任务进度、软件急停及复位、错误报告和心跳；地图、定位、路径、相机、关节、电池和诊断复用标准 ROS 2 类型，话题与 QoS 见协议。新增字段要求所有接口使用方同步重建。
 
 详见[接口协议](docs/接口协议.md)。仓库使用英文名称 `ai-interaction-ui`，中文项目名称为“ai交互界面”。
 
@@ -37,11 +37,13 @@ ros2 run --prefix /usr/bin/python3 robot_visualization dashboard --ros-args \
 
 GUI 依赖固定为 PySide6 6.8.3，直接安装到系统 Python 的用户目录，无需虚拟环境。已安装 6.12.0 且出现 `none_dealloc` 崩溃时，先按[工作台使用说明](docs/前端工作台_使用说明.md#pyside6-依赖替换与崩溃排查)替换依赖。
 
-窗口提供真实录音开始／停止、ASR 文字、语义候选、处理阶段、历史查询和运行日志。麦克风最长十秒自动停止。地图、相机、底盘和电池尚未接入，因此不添加对应区域。下文保留分节点调试命令；一键启动时无需另外手动打开这些节点。
+窗口提供真实录音开始／停止、ASR 文字、语义候选、处理阶段、历史查询和运行日志。麦克风默认最长120秒自动停止，可通过 max_recording_seconds 配置为1～300秒。地图、相机、底盘和电池尚未接入，因此不添加对应区域。下文保留分节点调试命令；一键启动时无需另外手动打开这些节点。
 
 完整参数、白名单、香橙派模式、模块说明及验证见 [前端工作台使用说明](docs/前端工作台_使用说明.md)。
 
 支持同一会话中的多轮任务澄清：先保存缺参候选并追问，再结合下一轮回答补全，完整候选仍需后续准备和确认。实现逻辑、上下文边界及手动测试步骤见[多轮任务澄清](docs/多轮任务澄清.md)。
+
+草稿支持逐段录音追加、增删和重排步骤，保存在工作空间 `task_data/task_drafts.sqlite3`；确认只记录人工审阅结果，尚未连接机器人执行。接口升级后必须完整重建所有包，详见[任务草稿与长任务](docs/任务草稿与长任务.md)。
 
 ### 源码目录导航
 
@@ -132,7 +134,7 @@ ros2 run ai_interface audio_receiver_node --ros-args -p output_dir:=received_aud
 ros2 topic echo /ai/request_status robot_interfaces/msg/RequestStatus
 ```
 
-香橙派使用相同版本接口、相同 ROS_DOMAIN_ID 和可互通的 DDS 网络，按协议发送 `pcm_s16le / 16000 Hz / 单声道` 完整片段（不是 WAV 容器或 MP3），每段最多 10 秒。四个关联 ID 必填；起止时间、发布 stamp 必须有效且与实际帧数相符，两端时钟应同步。QoS 为 Reliable / Volatile / KeepLast(10)，应先启动接收端再发送。
+香橙派使用相同版本接口、相同 ROS_DOMAIN_ID 和可互通的 DDS 网络，按协议发送 `pcm_s16le / 16000 Hz / 单声道` 完整片段（不是 WAV 容器或 MP3），每段最多 300 秒。四个关联 ID 必填；起止时间、发布 stamp 必须有效且与实际帧数相符，两端时钟应同步。QoS 为 Reliable / Volatile / KeepLast(10)，应先启动接收端再发送。
 
 文件名格式为 `audio_年月日_时分秒_微秒_UUID.wav`，例如 `audio_20261101_193000_123456_唯一标识.wav`。日期时间使用接收保存时的北京时间（UTC+8），不受 WSL 系统时区影响；UUID 避免重名。日志和回执包含 request_id 与实际路径。相对 output_dir 以启动目录解析。operation=/audio/segments 的成功仅表示音频已保存，ASR 和解析分别按各自 operation 回报。音频校验／保存失败返回 AUDIO_RECEIVE_FAILED。录音、识别文本和解析结果是运行数据，不应作为源码提交。
 
@@ -178,7 +180,7 @@ pactl list short sources
 ros2 run ai_interface microphone_sender_node --ros-args -p device:=RDPSource
 ```
 
-开始回执成功只表示 parecord 进程已启动，设备初始化失败由节点日志报告。停止回执成功表示真实音频已发布；接收落盘仍查看 `/ai/request_status`。采集最多 10 秒／320000 字节，后台持续读取管道，达到上限自动停止并发送。停止总会终止采集：没有接收者或无音频时返回失败并丢弃，不伪造结果；重复停止不重发，节点退出会停止采集并丢弃未发送数据。尚未使用会话管理时默认生成 mic-session／mic-context 标识，仅用于独立录音链路测试；接入任务系统后用 session_id、input_context_id 参数传入当前有效上下文。
+开始回执成功只表示 parecord 进程已启动，设备初始化失败由节点日志报告。停止回执成功表示真实音频已发布；接收落盘仍查看 `/ai/request_status`。采集默认最多120秒，可配置为1～300秒，协议最多9,600,000字节，后台持续读取管道，达到上限自动停止并发送。停止总会终止采集：没有接收者或无音频时返回失败并丢弃，不伪造结果；重复停止不重发，节点退出会停止采集并丢弃未发送数据。尚未使用会话管理时默认生成 mic-session／mic-context 标识，仅用于独立录音链路测试；接入任务系统后用 session_id、input_context_id 参数传入当前有效上下文。
 
 采集起止时间按停止时 ROS 时钟及实际帧数推算，不是硬件采样时间戳，可能包含设备缓冲／停止延迟；不可用作精确传感器同步。说话前可等待设备初始化，开始后立即停止可能尚未得到数据。
 
@@ -232,7 +234,7 @@ RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来�
 
 `/ai/request_status` 按 request_id、source_node、operation 区分保存、AI受理、ASR和语义阶段；`/ai/asr_text` 由 AI 端发布，仅作结果输出，不触发第二条解析链。
 
-接口侧异步等待 AI 服务／受理响应各最多 3 秒，超时保留 WAV 并标记交接未确认，不自动重试。接口发送队列最多 10 项。AI 侧独立维护最多 10 项任务和 1024 项进程内去重指纹：相同请求／来源不重复识别，内容冲突拒绝。重启不扫描旧文件，去重尚未跨重启持久化。AI 侧 ASR／解析默认各等待 30 秒，参数 asr_timeout／parse_timeout 范围 (0,300]，Goal 等待 3 秒，超时不推进后续阶段。任务执行仍须经过原有准备和显式确认。
+接口侧异步等待 AI 服务／受理响应各最多 3 秒，超时保留 WAV 并标记交接未确认，不自动重试。接口发送队列最多 10 项。AI 侧独立维护最多 10 项任务和 1024 项进程内去重指纹：相同请求／来源不重复识别，内容冲突拒绝。重启不扫描旧文件，去重尚未跨重启持久化。AI 侧等待 ASR 默认185秒、解析默认300秒，参数 asr_timeout／parse_timeout 范围 (0,300]，Goal 等待 3 秒，超时不推进后续阶段。任务执行仍须经过原有准备和显式确认。
 
 验证记录（2026-11-01）：WSL Humble 临时工作空间 /tmp/ai-role-split-csXsZ5 中三个包构建通过，接口打包→AI受理→ASR服务→语义Action 的实际 ROS 通信契约验证通过，覆盖静音、失败、重放、关联错误、澄清、白名单、拒绝、超时及恢复；所有后续识别阶段由 AI 节点发起。临时契约服务不是实际模型推理，测试结果已清理。
 
@@ -388,9 +390,9 @@ ros2 action send_goal /ai/parse_task robot_interfaces/action/ParseTask \
 | `ai_edge/ai_edge/semantic/semantic_input.py` | Goal 来源、历史、部分候选及输入总量校验 |
 | `ai_edge/ai_edge/semantic/parse_task_node.py` | ROS Action、反馈、并发拒绝、取消与超时 |
 
-节点参数为 model（qwen3.5:2b）、ollama_url（http://127.0.0.1:11434）、request_timeout（90.0 秒，范围 (0,290]）。冷启动可能需要加载模型，编排侧 parse_timeout 推荐 120 秒，应大于服务端等待上限；原默认 30 秒保持兼容。单模型只处理一条请求，并发 Goal 被拒并广播 LLM_BUSY 回执。取消或超时后立即结束 ROS 等待，底层 HTTP 返回前保持忙碌并丢弃迟到内容，不自动重试。
+节点参数为 model（qwen3.5:2b）、ollama_url（http://127.0.0.1:11434）、request_timeout（290.0 秒，范围 (0,290]）。冷启动可能需要加载模型，编排侧 parse_timeout 默认300秒，大于服务端290秒等待上限。单模型只处理一条请求，并发 Goal 被拒并广播 LLM_BUSY 回执。取消或超时后立即结束 ROS 等待，底层 HTTP 返回前保持忙碌并丢弃迟到内容，不自动重试。
 
-UNKNOWN/不支持、缺参、未知 ID、无效 JSON、连接失败均不生成完整可执行候选。所有 ID 由程序关联，不交给模型生成。当前音频流程仍按独立单句处理；直接调用 Action 时可显式传入同一会话上下文的 context 和 partial_candidate，不自动记忆跨轮历史。查询、确认、取消等业务命令应由交互层分流，模型解析不能代替这些服务。READY 也必须经过任务准备和用户确认后才能执行。
+UNKNOWN/不支持、缺参、未知 ID、无效 JSON、连接失败均不生成完整可执行候选。所有 ID 由程序关联，不交给模型生成。音频流程支持同一会话的多轮澄清；直接调用 Action 时仍由调用方传入 context 和 partial_candidate，语义服务自身不跨请求保存对话。查询、确认、取消等业务命令应由交互层分流，模型解析不能代替这些服务。READY 也必须经过任务准备和用户确认后才能执行。
 
 规则校验回归（无需模型）：`python3 -m unittest discover -s src/ai_edge/test -v`。模型结构化输出和思考开关依据 [Ollama Chat API](https://docs.ollama.com/api/chat)、[结构化输出](https://docs.ollama.com/capabilities/structured-outputs)。
 

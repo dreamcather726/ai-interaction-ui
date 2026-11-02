@@ -23,6 +23,10 @@ def build_dashboard():
     worker.availability.connect(window.receive_availability, queued)
     worker.control.connect(window.control_result, queued)
     worker.log.connect(window.append_log, queued)
+    worker.draft.connect(window.receive_draft, queued)
+    window.draft_requested.connect(
+        lambda operation, value: worker.command("draft_" + operation, value)
+    )
     window.start_requested.connect(lambda: worker.command("start"))
     window.stop_requested.connect(lambda: worker.command("stop"))
     window.query_requested.connect(lambda value: worker.command("query", value))

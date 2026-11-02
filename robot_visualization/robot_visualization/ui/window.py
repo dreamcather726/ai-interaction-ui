@@ -23,6 +23,9 @@ from PySide6.QtWidgets import (
 from robot_visualization.state import STAGES, RecordStore
 from robot_visualization.ui.theme import STYLE
 from robot_visualization.ui.widgets import Badge, Card, PipelineStrip, glyph, label
+from robot_visualization.ui.task_drafts import TaskDraftPanel
+from robot_visualization.task_model import normalize_candidate
+from ai_edge.task_drafts.store import plan_steps, plan_summary
 
 
 class DashboardWindow(QMainWindow):
@@ -32,6 +35,7 @@ class DashboardWindow(QMainWindow):
     stop_requested = Signal()
     query_requested = Signal(str)
     shutdown_requested = Signal()
+    draft_requested = Signal(str, dict)
 
     def __init__(self, config):
         super().__init__()
@@ -99,13 +103,15 @@ class DashboardWindow(QMainWindow):
         grid.addWidget(self._build_service_card(), 0, 1)
         grid.addWidget(self._build_result_card(), 1, 0)
         grid.addWidget(self._build_history_card(), 1, 1)
-        grid.addWidget(self._build_log_card(), 2, 0, 1, 2)
+        grid.addWidget(self._build_draft_card(), 2, 0, 1, 2)
+        grid.addWidget(self._build_log_card(), 3, 0, 1, 2)
         return scroll
 
     def _build_recording_card(self):
         """创建录音提示、状态标签和开始／停止按钮。"""
         recording = Card(
-            "语音输入", "开始录音后说出指令，说完停止并识别；单段最长十秒。"
+            "语音输入",
+            f"说完后停止并识别；单段最长 {getattr(self.config, 'max_recording_seconds', 120.0):g} 秒，可分段录音加入同一草稿。",
         )
         self.capture_badge = Badge("设备状态未确认")
         recording.heading.addWidget(self.capture_badge)
@@ -142,6 +148,7 @@ class DashboardWindow(QMainWindow):
             ("asr", "语音识别"),
             ("parser", "语义解析"),
             ("processor", "AI 编排"),
+            ("drafts", "任务草稿"),
         ):
             row = QHBoxLayout()
             row.addWidget(label(title))
@@ -221,6 +228,19 @@ class DashboardWindow(QMainWindow):
         logs.body.addWidget(self.logs)
         return logs
 
+    def _build_draft_card(self):
+        card = Card("任务草稿与确认", "按实际顺序增删步骤，保存后逐步核对并确认。")
+        self.draft_panel = TaskDraftPanel(self.config)
+        self.draft_panel.command_requested.connect(self.draft_requested.emit)
+        card.body.addWidget(self.draft_panel)
+        return card
+
+    @Slot(dict)
+    def receive_draft(self, value):
+        self.draft_panel.receive(value)
+        if value.get("message"):
+            self.append_log(value["message"])
+
     def refresh_controls(self):
         """服务连接、ASR 就绪、设备待机且无挂起操作时，才允许开始录音。"""
         value = self.availability
@@ -237,6 +257,8 @@ class DashboardWindow(QMainWindow):
         self.start_button.setEnabled(bool(can_start))
         self.stop_button.setEnabled(bool(can_stop))
         self.query_button.setEnabled(bool(value.get("query") and not self.closing))
+        self.draft_panel.setEnabled(not self.closing)
+        self.draft_panel.set_online(value.get("drafts", False))
 
     def start_recording(self):
         if not self.start_button.isEnabled():
@@ -356,34 +378,25 @@ class DashboardWindow(QMainWindow):
         self.request_label.setText(f"请求：{self.selected_request or '—'}")
         self.asr_text.setPlainText(asr.get("text", ""))
         self._show_candidate(parsed)
+        self.draft_panel.set_candidate(parsed)
         self._show_result_details(state, parsed)
 
     def _show_candidate(self, parsed):
-        """只展示有效或待澄清的候选，切换记录时清除旧候选。"""
-        candidate = parsed.get("candidate", {})
-        # 澄清回复可以展示已有字段，但失败或不支持的回复不是有效候选。
+        """展示单任务或有序步骤；草稿编辑独立于识别历史。"""
         is_ready = parsed.get("success") and parsed.get("outcome") == 0
         needs_clarification = parsed.get("outcome") == 1
         if is_ready or needs_clarification:
-            task_type = {0: "未知", 1: "导航", 2: "搬运"}.get(
-                candidate.get("task_type"), "未知"
+            candidate = normalize_candidate(parsed.get("candidate", {}))
+            kinds = {
+                "UNKNOWN": "未知",
+                "NAVIGATE": "导航",
+                "TRANSPORT": "搬运",
+                "SEQUENCE": "有序任务列表",
+            }
+            self.candidate_text.setPlainText(
+                f"任务类型：{kinds.get(candidate['task_type'], '未知')}\n"
+                f"共 {len(plan_steps(candidate))} 步\n" + plan_summary(candidate)
             )
-            lines = [f"任务类型：{task_type}"]
-            for key, name in (
-                ("object_id", "物料"),
-                ("pickup_station_id", "取货工位"),
-                ("dropoff_station_id", "卸货工位"),
-                ("destination_station_id", "目标工位"),
-                ("return_station_id", "返回工位"),
-            ):
-                if candidate.get(key):
-                    lines.append(f"{name}：{candidate[key]}")
-                elif key in parsed.get("missing_fields", []):
-                    lines.append(f"{name}：待补充")
-            lines.append(
-                "需要返回：" + ("是" if candidate.get("return_required") else "否")
-            )
-            self.candidate_text.setPlainText("\n".join(lines))
         else:
             self.candidate_text.clear()
 
@@ -395,7 +408,9 @@ class DashboardWindow(QMainWindow):
                 f"{question}\n请再次录音回答；更换任务请先说“重新开始”。"
             )
         elif parsed.get("outcome") == 0 and parsed.get("success"):
-            self.dialogue_hint.setText("任务信息已完整，等待准备与明确确认；尚未执行。")
+            self.dialogue_hint.setText(
+                "候选信息已完整，可加入下方草稿逐步核对；尚未执行。"
+            )
         else:
             self.dialogue_hint.clear()
         self.dialogue_hint.setVisible(bool(self.dialogue_hint.text()))

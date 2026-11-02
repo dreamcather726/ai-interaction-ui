@@ -23,9 +23,14 @@ class MicrophoneSenderNode(Node):
     def __init__(self):
         super().__init__("microphone_sender_node")
         self.declare_parameter("device", "@DEFAULT_SOURCE@")
+        self.declare_parameter("max_recording_seconds", 120.0)
         self.declare_parameter("session_id", "mic-session-" + uuid4().hex)
         self.declare_parameter("input_context_id", "mic-context-" + uuid4().hex)
         self.device = self.get_parameter("device").value
+        self.max_seconds = self.get_parameter("max_recording_seconds").value
+        if not 1 <= self.max_seconds <= 300:
+            raise ValueError("max_recording_seconds 必须在 1～300 秒之间")
+        self.max_bytes = int(self.max_seconds * 16000) * 2
         # 录音子进程及 PCM 缓冲仅在一次采集期间有效。
         self.process = None
         self.errors = None
@@ -41,7 +46,7 @@ class MicrophoneSenderNode(Node):
         self.stop_service = self.create_service(
             Trigger, "/audio/stop_recording", self.stop_recording
         )
-        # 使用单调时钟，系统时间调整不会延长十秒采集上限。
+        # 使用单调时钟，系统时间调整不会延长配置的采集上限。
         self.timer_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self.timer = self.create_timer(
             0.05, self.poll_recording, clock=self.timer_clock
@@ -116,20 +121,20 @@ class MicrophoneSenderNode(Node):
                 break
             if not chunk:
                 break
-            remaining = 320000 - len(self.pcm)
+            remaining = self.max_bytes - len(self.pcm)
             self.pcm.extend(chunk[:remaining])
-            if len(self.pcm) >= 320000:
+            if len(self.pcm) >= self.max_bytes:
                 break
 
     def poll_recording(self):
-        """收集 PCM 数据，到达十秒或字节上限后自动停止并发送。"""
+        """收集 PCM 数据，到达配置的时间或字节上限后自动停止并发送。"""
         if self.process is None:
             return
         self.drain_audio()
         if (
             self.process.poll() is not None
-            or len(self.pcm) >= 320000
-            or time.monotonic() - self.started_at >= 10
+            or len(self.pcm) >= self.max_bytes
+            or time.monotonic() - self.started_at >= self.max_seconds
         ):
             result = self.stop_recording(None, Trigger.Response())
             if result.success:
@@ -174,7 +179,7 @@ class MicrophoneSenderNode(Node):
             return response
         try:
             remaining, error, code = self.close_capture()
-            self.pcm.extend(remaining[: 320000 - len(self.pcm)])
+            self.pcm.extend(remaining[: self.max_bytes - len(self.pcm)])
             if code not in (0, -signal.SIGINT):
                 raise RuntimeError(error or f"parecord 异常退出，退出码为 {code}")
             if not self.pcm or len(self.pcm) % 2:

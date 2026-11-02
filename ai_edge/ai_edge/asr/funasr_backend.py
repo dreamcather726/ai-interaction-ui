@@ -137,9 +137,22 @@ class FunASRBackend:
         if samples.size == 0 or not np.any(samples):
             return Transcription("")
         try:
-            results = self.model.generate(
-                input=samples, fs=16000, cache={}, language=self.language, use_itn=True
-            )
+            results = []
+            chunk_size = 25 * 16000
+            for offset in range(0, samples.size, chunk_size):
+                self.progress(
+                    f"语音识别片段 {offset // chunk_size + 1}/{(samples.size + chunk_size - 1) // chunk_size}"
+                )
+                part = self.model.generate(
+                    input=samples[offset : offset + chunk_size],
+                    fs=16000,
+                    cache={},
+                    language=self.language,
+                    use_itn=True,
+                )
+                if not isinstance(part, list):
+                    raise ASRError("INVALID_ASR_RESULT", "FunASR 返回的数据结构不正确")
+                results.extend(part)
         except Exception as exc:
             raise ASRError("ASR_FAILED", f"FunASR 推理失败：{exc}") from exc
         if not isinstance(results, list):
@@ -162,8 +175,8 @@ class FunASRBackend:
             if text:
                 texts.append(text)
         text = " ".join(texts).strip()
-        if len(text) > 4096:
+        if len(text) > 16384:
             raise ASRError(
-                "ASR_OUTPUT_TOO_LONG", "识别文字超过 4096 字符，未截断或进入语义解析"
+                "ASR_OUTPUT_TOO_LONG", "识别文字超过 16384 字符，未截断或进入语义解析"
             )
         return Transcription(text, language or language_map.get(self.language, ""))

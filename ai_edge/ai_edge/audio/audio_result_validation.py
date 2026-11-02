@@ -8,7 +8,7 @@ from ai_edge.semantic.semantic_contract import (
     validate_candidate,
 )
 from robot_interfaces.action import ParseTask
-from robot_interfaces.msg import RecognizedText, TaskCandidate
+from robot_interfaces.msg import RecognizedText
 
 
 class ResultValidationError(ValueError):
@@ -48,7 +48,7 @@ def validate_asr_result(msg, result):
         result.status == RecognizedText.SUCCESS
         and result.success
         and bool(result.text.strip())
-        and len(result.text) <= 4096
+        and len(result.text) <= 16384
         and not result.error_code
         and bool(result.message.strip())
     )
@@ -148,26 +148,8 @@ def validate_parse_result(msg, wrapped, stations, objects):
 
 def valid_candidate(candidate, stations, objects):
     """按任务类型检查必填字段、互斥字段和配置白名单。"""
-    stations, objects = set(stations), set(objects)
-    if candidate.task_type == TaskCandidate.NAVIGATE:
-        targets = [candidate.destination_station_id]
-        valid = not any(
-            (
-                candidate.object_id,
-                candidate.pickup_station_id,
-                candidate.dropoff_station_id,
-            )
-        )
-    elif candidate.task_type == TaskCandidate.TRANSPORT:
-        targets = [candidate.pickup_station_id, candidate.dropoff_station_id]
-        valid = (
-            bool(candidate.object_id in objects)
-            and not candidate.destination_station_id
-        )
-    else:
+    try:
+        answer = validate_candidate(candidate_payload(candidate), stations, objects)
+        return not answer.unsupported and not answer.missing_fields
+    except SemanticError:
         return False
-    if candidate.return_required:
-        targets.append(candidate.return_station_id)
-    elif candidate.return_station_id:
-        return False
-    return valid and all(target and target in stations for target in targets)

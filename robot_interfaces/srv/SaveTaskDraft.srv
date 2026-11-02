@@ -1,0 +1,16 @@
+builtin_interfaces/Time stamp
+string request_id
+# Empty draft_id creates a draft; updates require the current revision.
+string draft_id
+uint32 expected_revision
+string session_id
+string input_context_id
+string[] source_request_ids
+robot_interfaces/TaskCandidate candidate
+---
+builtin_interfaces/Time stamp
+string request_id
+bool success
+string message
+string error_code
+robot_interfaces/TaskPlanDraft draft

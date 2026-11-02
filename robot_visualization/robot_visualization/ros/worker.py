@@ -18,6 +18,7 @@ class RosWorker(QThread):
     availability = Signal(dict)
     control = Signal(dict)
     log = Signal(str)
+    draft = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -35,7 +36,8 @@ class RosWorker(QThread):
             self.commands.put_nowait((operation, value))
         except queue.Full:
             self.report_log(f"未能排入操作：{operation}，操作队列已满")
-            self.control.emit({"success": False, "message": "操作队列已满，请稍后再试"})
+            signal = self.draft if operation.startswith("draft_") else self.control
+            signal.emit({"success": False, "message": "操作队列已满，请稍后再试"})
 
     def run(self):
         executor = SingleThreadedExecutor()
@@ -60,9 +62,15 @@ class RosWorker(QThread):
                     operation, value = self.commands.get_nowait()
                     self.report_log(
                         f"处理界面操作：{operation}"
-                        + (f"，请求 ID：{value}" if value else "")
+                        + (
+                            f"，请求 ID：{value}"
+                            if isinstance(value, str) and value
+                            else ""
+                        )
                     )
-                    if operation == "query":
+                    if operation.startswith("draft_"):
+                        self.node.drafts.send(operation.removeprefix("draft_"), value)
+                    elif operation == "query":
                         self.node.request_query(value)
                     else:
                         self.node.request_control(operation)

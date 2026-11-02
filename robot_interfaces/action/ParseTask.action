@@ -3,7 +3,7 @@ string request_id
 string session_id
 string input_id
 string input_context_id
-string<=4096 text
+string<=16384 text
 robot_interfaces/DialogueTurn[<=20] context
 robot_interfaces/TaskCandidate partial_candidate
 string[] allowed_station_ids

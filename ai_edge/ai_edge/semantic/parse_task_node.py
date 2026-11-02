@@ -13,6 +13,7 @@ from rclpy.task import Future
 from ai_edge.semantic.ollama_backend import OllamaBackend
 from ai_edge.semantic.semantic_contract import SemanticError
 from ai_edge.semantic.semantic_input import read_parse_goal
+from ai_edge.semantic.ros_candidates import assign_candidate
 from robot_interfaces.action import ParseTask
 from robot_interfaces.msg import RequestStatus
 
@@ -25,7 +26,7 @@ class ParseTaskNode(Node):
         for name, value in (
             ("ollama_url", "http://127.0.0.1:11434"),
             ("model", "qwen3.5:2b"),
-            ("request_timeout", 90.0),
+            ("request_timeout", 290.0),
         ):
             self.declare_parameter(name, value)
         self.timeout = self.get_parameter("request_timeout").value
@@ -129,20 +130,15 @@ class ParseTaskNode(Node):
             self.feedback(
                 handle, ParseTask.Feedback.VALIDATING, "模型输出及白名单校验已完成"
             )
-            result.candidate.stamp = self.get_clock().now().to_msg()
-            types = {"UNKNOWN": 0, "NAVIGATE": 1, "TRANSPORT": 2}
-            for field, value in answer.candidate.items():
-                setattr(
-                    result.candidate,
-                    field,
-                    types[value] if field == "task_type" else value,
-                )
+            assign_candidate(
+                result.candidate, answer.candidate, self.get_clock().now().to_msg()
+            )
             if answer.unsupported:
                 result.outcome, result.error_code = (
                     result.UNSUPPORTED,
                     "UNSUPPORTED_TASK",
                 )
-                result.message = "当前只支持单个导航或搬运任务，此输入未生成可执行候选"
+                result.message = "未识别到支持的导航或搬运任务，此输入未生成候选"
                 handle.abort()
             elif answer.missing_fields:
                 result.outcome, result.error_code = (

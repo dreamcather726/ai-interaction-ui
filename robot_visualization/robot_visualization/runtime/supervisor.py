@@ -83,7 +83,7 @@ class BackendSupervisor:
                     {
                         "audio_root": str(c.audio_root),
                         "enable_semantic": True,
-                        "parse_timeout": 120.0,
+                        "parse_timeout": 300.0,
                         "allowed_station_ids": c.stations,
                         "allowed_object_ids": c.objects,
                     },
@@ -95,7 +95,7 @@ class BackendSupervisor:
             params = {
                 "audio_root": str(c.audio_root),
                 "enable_semantic": True,
-                "parse_timeout": 120.0,
+                "parse_timeout": 300.0,
             }
             if c.stations:
                 params["allowed_station_ids"] = c.stations
@@ -105,12 +105,29 @@ class BackendSupervisor:
                 "audio_processing_node",
                 ros_command("ai_edge", "audio_processing_node", params),
             )
+        draft_params = {
+            "database_path": str(c.audio_root.parent / "task_data/task_drafts.sqlite3")
+        }
+        if c.stations:
+            draft_params["allowed_station_ids"] = c.stations
+        if c.objects:
+            draft_params["allowed_object_ids"] = c.objects
+        plans.append(
+            ("task_draft_node", ros_command("ai_edge", "task_draft_node", draft_params))
+        )
         if c.start_microphone:
             plans.append(
                 (
                     "microphone_sender_node",
                     ros_command(
-                        "ai_interface", "microphone_sender_node", {"device": c.device}
+                        "ai_interface",
+                        "microphone_sender_node",
+                        {
+                            "device": c.device,
+                            "max_recording_seconds": getattr(
+                                c, "max_recording_seconds", 120.0
+                            ),
+                        },
                     ),
                 )
             )

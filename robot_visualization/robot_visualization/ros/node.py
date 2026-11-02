@@ -21,6 +21,7 @@ from robot_interfaces.msg import (
 from robot_interfaces.srv import ProcessAudio, QueryAudio, RecognizeAudio
 from robot_visualization.config import DashboardConfig
 from robot_visualization.state import STAGES
+from robot_visualization.ros.drafts import DraftClient
 
 
 def payload(message):
@@ -48,6 +49,7 @@ class DashboardNode(Node):
         self.last_status_log = {}
         self.owned_nodes = set()
         self.started_recording = False
+        self.drafts = DraftClient(self, events, payload)
         self.subscriptions_list = [
             self.create_subscription(
                 AudioProcessingState, "/ai/audio_state", self.on_state, 10
@@ -90,6 +92,7 @@ class DashboardNode(Node):
             "audio_processing_node",
             "audio_receiver_node",
             "microphone_sender_node",
+            "task_draft_node",
         }
         if message.name in names and message.name not in self.owned_nodes:
             self.events.report_log(f"[{message.name}] {message.msg}")
@@ -146,6 +149,7 @@ class DashboardNode(Node):
         )
 
     def poll(self):
+        self.drafts.poll()
         now = time.monotonic()
         for key, (client, future, deadline, operation) in list(self.pending.items()):
             if future.done():
@@ -232,6 +236,7 @@ class DashboardNode(Node):
             "parser": available(self.parser.server_is_ready()),
             "processor": available(self.process_client.service_is_ready()),
             "receiver": available("audio_receiver_node" in self.get_node_names()),
+            "drafts": available(self.drafts.ready()),
         }
         names = {
             "microphone": "麦克风",
@@ -239,6 +244,7 @@ class DashboardNode(Node):
             "parser": "语义解析",
             "processor": "AI 编排",
             "receiver": "音频接收",
+            "drafts": "任务草稿",
         }
         for name, status in services.items():
             self.log_status_change(
@@ -282,6 +288,7 @@ class DashboardNode(Node):
                 "asr_ready": ready,
                 "query": self.query_client.service_is_ready(),
                 "connected": self.process_client.service_is_ready(),
+                "drafts": self.drafts.ready(),
                 "hint": (
                     microphone.message
                     if microphone and microphone.error_code
@@ -299,6 +306,7 @@ class DashboardNode(Node):
             self.events.report_log(message)
 
     def close(self):
+        self.drafts.close()
         for client, future, _, _ in self.pending.values():
             client.remove_pending_request(future)
             future.cancel()

@@ -24,6 +24,7 @@ setup(
             "audio_processing_node = ai_edge.audio.audio_processing_node:main",
             "asr_node = ai_edge.asr.asr_node:main",
             "parse_task_node = ai_edge.semantic.parse_task_node:main",
+            "task_draft_node = ai_edge.task_drafts.node:main",
         ],
     },
 )
