@@ -74,6 +74,50 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(self.window.start_button.isEnabled())
         self.assertTrue(self.window.stop_button.isEnabled())
 
+    def test_selecting_history_keeps_results_with_their_request(self):
+        self.window.receive_record("asr", {"request_id": "one", "text": "第一段"})
+        self.window.receive_record("asr", {"request_id": "two", "text": "第二段"})
+        self.window.history.setCurrentRow(1)
+        self.assertEqual(self.window.asr_text.toPlainText(), "第一段")
+        self.window.receive_record("asr", {
+            "request_id": "two", "text": "第二段更新", "stamp_ns": 1,
+        })
+        self.assertEqual(self.window.asr_text.toPlainText(), "第一段")
+
+    def test_failed_parse_never_displays_an_executable_candidate(self):
+        self.window.receive_record("parse", {
+            "request_id": "one", "success": True, "outcome": 0,
+            "candidate": {"task_type": 1, "destination_station_id": "station_a"},
+        })
+        self.assertIn("station_a", self.window.candidate_text.toPlainText())
+        self.window.receive_record("parse", {
+            "request_id": "two", "success": False, "outcome": 3,
+            "candidate": {"task_type": 1, "destination_station_id": "station_b"},
+            "error_code": "LLM_UNAVAILABLE",
+        })
+        self.assertEqual(self.window.candidate_text.toPlainText(), "")
+        self.assertIn("LLM_UNAVAILABLE", self.window.result_message.text())
+
+    def test_query_only_requests_existing_record_by_id(self):
+        sent = []
+        self.window.query_requested.connect(sent.append)
+        self.window.receive_availability(self.value)
+        self.window.query_input.setText("  audio-request-one  ")
+        QTest.mouseClick(self.window.query_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(sent, ["audio-request-one"])
+        self.assertEqual(self.window.history.count(), 0)
+
+    def test_close_waits_for_worker_and_requests_shutdown_once(self):
+        sent = []
+        self.window.shutdown_requested.connect(lambda: sent.append("shutdown"))
+        self.window.close()
+        self.window.close()
+        self.assertTrue(self.window.isVisible())
+        self.assertEqual(sent, ["shutdown"])
+        self.window.on_worker_finished()
+        self.app.processEvents()
+        self.assertFalse(self.window.isVisible())
+
 
 if __name__ == "__main__":
     unittest.main()
