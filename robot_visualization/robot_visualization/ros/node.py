@@ -122,7 +122,9 @@ class DashboardNode(Node):
             )
             return
         future = client.call_async(Trigger.Request())
-        self.events.report_log(f"已发送录音请求：{operation}，等待设备响应（最多 3 秒）")
+        self.events.report_log(
+            f"已发送录音请求：{operation}，等待设备响应（最多 3 秒）"
+        )
         self.pending["control"] = (client, future, time.monotonic() + 3.0, operation)
 
     def request_query(self, request_id):
@@ -180,7 +182,9 @@ class DashboardNode(Node):
 
     def accept_snapshot(self, response):
         if not response.success or not response.found:
-            self.events.report_log(f"快照查询：{response.error_code} {response.message}")
+            self.events.report_log(
+                f"快照查询：{response.error_code} {response.message}"
+            )
             return
         self.events.record.emit("state", payload(response.state))
         if response.asr_available:
@@ -230,11 +234,16 @@ class DashboardNode(Node):
             "receiver": available("audio_receiver_node" in self.get_node_names()),
         }
         names = {
-            "microphone": "麦克风", "asr": "语音识别", "parser": "语义解析",
-            "processor": "AI 编排", "receiver": "音频接收",
+            "microphone": "麦克风",
+            "asr": "语音识别",
+            "parser": "语义解析",
+            "processor": "AI 编排",
+            "receiver": "音频接收",
         }
         for name, status in services.items():
-            self.log_status_change(name, status, f"服务状态：{names[name]} → {status[0]}")
+            self.log_status_change(
+                name, status, f"服务状态：{names[name]} → {status[0]}"
+            )
         blockers = []
         if not start:
             blockers.append("录音开始服务未连接")
@@ -246,14 +255,20 @@ class DashboardNode(Node):
             blockers.append("ASR 模型未就绪")
         reason = "；".join(blockers)
         self.log_status_change(
-            "recording_gate", reason,
-            f"开始录音暂不可用：{reason}" if reason else "设备与 ASR 已就绪，可以开始录音",
+            "recording_gate",
+            reason,
+            (
+                f"开始录音暂不可用：{reason}"
+                if reason
+                else "设备与 ASR 已就绪，可以开始录音"
+            ),
         )
         for name, component in (("asr", asr), ("microphone", microphone)):
             if component and component.error_code:
                 detail = (component.error_code, component.message)
                 self.log_status_change(
-                    name + "_error", detail,
+                    name + "_error",
+                    detail,
                     f"{names[name]}异常：{component.error_code}；{component.message}",
                 )
             else:

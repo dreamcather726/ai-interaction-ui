@@ -26,6 +26,8 @@ from robot_visualization.ui.widgets import Badge, Card, PipelineStrip, glyph, la
 
 
 class DashboardWindow(QMainWindow):
+    """Qt 展示与交互层；模型加载、ROS 通信和进程管理由后台负责。"""
+
     start_requested = Signal()
     stop_requested = Signal()
     query_requested = Signal(str)
@@ -50,19 +52,27 @@ class DashboardWindow(QMainWindow):
         self.timer.timeout.connect(self.tick)
         self.timer.start(200)
         self.shortcuts = []
-        for key, callback in (("Alt+R", self.start_recording),
-                              ("Alt+S", self.stop_recording)):
+        for key, callback in (
+            ("Alt+R", self.start_recording),
+            ("Alt+S", self.stop_recording),
+        ):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(callback)
             self.shortcuts.append(shortcut)
 
     def build_ui(self):
+        """组合页面结构；各区域的控件在独立方法中创建。"""
         canvas = QWidget()
         canvas.setObjectName("canvas")
         self.setCentralWidget(canvas)
         layout = QVBoxLayout(canvas)
         layout.setContentsMargins(22, 18, 22, 18)
         layout.setSpacing(16)
+        layout.addLayout(self._build_header())
+        layout.addWidget(self._build_content())
+
+    def _build_header(self):
+        """创建页面标题与 AI 编排连接标记。"""
         header = QHBoxLayout()
         heading = QVBoxLayout()
         heading.addWidget(label("AI 语音交互工作台", "title"))
@@ -71,8 +81,10 @@ class DashboardWindow(QMainWindow):
         header.addStretch()
         self.connection_badge = Badge()
         header.addWidget(self.connection_badge)
-        layout.addLayout(header)
+        return header
 
+    def _build_content(self):
+        """按原有网格位置组合五张卡片，统一放入滚动区域。"""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
@@ -82,9 +94,19 @@ class DashboardWindow(QMainWindow):
         grid.setColumnStretch(0, 3)
         grid.setColumnStretch(1, 2)
         scroll.setWidget(content)
-        layout.addWidget(scroll)
 
-        recording = Card("语音输入", "开始录音后说出指令，说完停止并识别；单段最长十秒。")
+        grid.addWidget(self._build_recording_card(), 0, 0)
+        grid.addWidget(self._build_service_card(), 0, 1)
+        grid.addWidget(self._build_result_card(), 1, 0)
+        grid.addWidget(self._build_history_card(), 1, 1)
+        grid.addWidget(self._build_log_card(), 2, 0, 1, 2)
+        return scroll
+
+    def _build_recording_card(self):
+        """创建录音提示、状态标签和开始／停止按钮。"""
+        recording = Card(
+            "语音输入", "开始录音后说出指令，说完停止并识别；单段最长十秒。"
+        )
         self.capture_badge = Badge("设备状态未确认")
         recording.heading.addWidget(self.capture_badge)
         icon = label()
@@ -108,13 +130,19 @@ class DashboardWindow(QMainWindow):
         recording.body.addLayout(controls)
         self.control_message = label("", "muted", True)
         recording.body.addWidget(self.control_message)
-        grid.addWidget(recording, 0, 0)
+        return recording
 
+    def _build_service_card(self):
+        """创建麦克风、ASR 等服务状态与当前配置展示。"""
         services = Card("服务状态", "状态来自服务发现与设备广播。")
         self.service_badges = {}
-        for name, title in (("microphone", "麦克风"), ("receiver", "音频接收"),
-                            ("asr", "语音识别"), ("parser", "语义解析"),
-                            ("processor", "AI 编排")):
+        for name, title in (
+            ("microphone", "麦克风"),
+            ("receiver", "音频接收"),
+            ("asr", "语音识别"),
+            ("parser", "语义解析"),
+            ("processor", "AI 编排"),
+        ):
             row = QHBoxLayout()
             row.addWidget(label(title))
             row.addStretch()
@@ -125,9 +153,13 @@ class DashboardWindow(QMainWindow):
         services.body.addWidget(label(f"语义模型：{self.config.model}", "muted", True))
         stations = "、".join(self.config.stations) or "未配置"
         objects = "、".join(self.config.objects) or "未配置"
-        services.body.addWidget(label(f"工位：{stations}\n物料：{objects}", "muted", True))
-        grid.addWidget(services, 0, 1)
+        services.body.addWidget(
+            label(f"工位：{stations}\n物料：{objects}", "muted", True)
+        )
+        return services
 
+    def _build_result_card(self):
+        """创建处理阶段、识别文字、任务候选及结果文件展示。"""
         results = Card("识别与任务候选", "候选结果仍需经过任务准备和用户确认。")
         self.stage_badge = Badge("等待音频")
         results.heading.addWidget(self.stage_badge)
@@ -148,10 +180,14 @@ class DashboardWindow(QMainWindow):
         self.result_message = label("", "muted", True)
         results.body.addWidget(self.result_message)
         self.file_label = label(f"音频目录：{self.config.audio_root}", "muted", True)
-        self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.file_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
         results.body.addWidget(self.file_label)
-        grid.addWidget(results, 1, 0)
+        return results
 
+    def _build_history_card(self):
+        """创建历史记录选择与按请求 ID 查询入口。"""
         history = Card("最近记录", "按请求 ID 查看已有结果；最多保留 100 条。")
         self.history = QListWidget()
         self.history.currentItemChanged.connect(self.select_record)
@@ -166,8 +202,10 @@ class DashboardWindow(QMainWindow):
         query_row.addWidget(self.query_input)
         query_row.addWidget(self.query_button)
         history.body.addLayout(query_row)
-        grid.addWidget(history, 1, 1)
+        return history
 
+    def _build_log_card(self):
+        """创建有行数上限的运行日志及清空显示按钮。"""
         logs = Card("运行日志")
         clear = QPushButton("清空显示")
         clear.setObjectName("small")
@@ -178,20 +216,23 @@ class DashboardWindow(QMainWindow):
         clear.clicked.connect(self.logs.clear)
         logs.heading.addWidget(clear)
         logs.body.addWidget(self.logs)
-        grid.addWidget(logs, 2, 0, 1, 2)
+        return logs
 
     def refresh_controls(self):
+        """服务连接、ASR 就绪、设备待机且无挂起操作时，才允许开始录音。"""
         value = self.availability
         available = not self.control_pending and not self.closing
         recording = value.get("recording")
-        self.start_button.setEnabled(bool(
-            available and value.get("start") and value.get("asr_ready")
+        can_start = (
+            available
+            and value.get("start")
+            and value.get("asr_ready")
             and recording is False
-        ))
+        )
         # 状态缺失时仍允许请求停止，不能将失联解释为录音已停止。
-        self.stop_button.setEnabled(bool(
-            available and value.get("stop") and recording is not False
-        ))
+        can_stop = available and value.get("stop") and recording is not False
+        self.start_button.setEnabled(bool(can_start))
+        self.stop_button.setEnabled(bool(can_stop))
         self.query_button.setEnabled(bool(value.get("query") and not self.closing))
 
     def start_recording(self):
@@ -218,6 +259,7 @@ class DashboardWindow(QMainWindow):
         self.refresh_controls()
 
     def receive_availability(self, value):
+        """接收 ROS 线程的状态快照；recording=None 表示设备状态未确认。"""
         previous = self.availability.get("recording")
         self.availability = value
         recording = value.get("recording")
@@ -291,6 +333,7 @@ class DashboardWindow(QMainWindow):
             self.show_record()
 
     def show_record(self):
+        """按选中的请求 ID 渲染阶段、文字与候选，避免跨录音串用结果。"""
         record = self.store.records.get(self.selected_request, {})
         state = record.get("state", {})
         asr = record.get("asr", {})
@@ -299,30 +342,45 @@ class DashboardWindow(QMainWindow):
         title, tone = STAGES.get(stage, ("等待处理状态", "idle"))
         self.stage_badge.update_status(title, tone)
         self.pipeline.update_stage(
-            stage, state.get("operation", ""), stage in (5, 6, 10),
+            stage,
+            state.get("operation", ""),
+            stage in (5, 6, 10),
             state.get("error_code", ""),
         )
         self.request_label.setText(f"请求：{self.selected_request or '—'}")
         self.asr_text.setPlainText(asr.get("text", ""))
+        self._show_candidate(parsed)
+        self._show_result_details(state, parsed)
+
+    def _show_candidate(self, parsed):
+        """只展示有效或待澄清的候选，切换记录时清除旧候选。"""
         candidate = parsed.get("candidate", {})
         # 澄清回复可以展示已有字段，但失败或不支持的回复不是有效候选。
-        if ((parsed.get("success") and parsed.get("outcome") == 0)
-                or parsed.get("outcome") == 1):
+        is_ready = parsed.get("success") and parsed.get("outcome") == 0
+        needs_clarification = parsed.get("outcome") == 1
+        if is_ready or needs_clarification:
             task_type = {0: "未知", 1: "导航", 2: "搬运"}.get(
                 candidate.get("task_type"), "未知"
             )
             lines = [f"任务类型：{task_type}"]
-            for key, name in (("object_id", "物料"),
-                              ("pickup_station_id", "取货工位"),
-                              ("dropoff_station_id", "卸货工位"),
-                              ("destination_station_id", "目标工位"),
-                              ("return_station_id", "返回工位")):
+            for key, name in (
+                ("object_id", "物料"),
+                ("pickup_station_id", "取货工位"),
+                ("dropoff_station_id", "卸货工位"),
+                ("destination_station_id", "目标工位"),
+                ("return_station_id", "返回工位"),
+            ):
                 if candidate.get(key):
                     lines.append(f"{name}：{candidate[key]}")
-            lines.append("需要返回：" + ("是" if candidate.get("return_required") else "否"))
+            lines.append(
+                "需要返回：" + ("是" if candidate.get("return_required") else "否")
+            )
             self.candidate_text.setPlainText("\n".join(lines))
         else:
             self.candidate_text.clear()
+
+    def _show_result_details(self, state, parsed):
+        """合并阶段说明、缺失字段、错误码及当前记录的音频路径。"""
         messages = [state.get("message", ""), parsed.get("message", "")]
         if parsed.get("missing_fields"):
             messages.append("待补充：" + "、".join(parsed["missing_fields"]))

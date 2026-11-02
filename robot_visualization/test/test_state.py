@@ -70,10 +70,14 @@ class SupervisorRulesTests(unittest.TestCase):
         output = io.StringIO()
         manager.log_file = io.StringIO()
         with contextlib.redirect_stdout(output):
-            manager.spawn("probe", [
-                sys.executable, "-c",
-                "import time; print('UNBUFFERED_CHILD_READY'); time.sleep(30)",
-            ])
+            manager.spawn(
+                "probe",
+                [
+                    sys.executable,
+                    "-c",
+                    "import time; print('UNBUFFERED_CHILD_READY'); time.sleep(30)",
+                ],
+            )
             process = manager.children["probe"]
             try:
                 deadline = time.monotonic() + 5

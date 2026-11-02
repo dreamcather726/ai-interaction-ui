@@ -79,22 +79,37 @@ class WindowTests(unittest.TestCase):
         self.window.receive_record("asr", {"request_id": "two", "text": "第二段"})
         self.window.history.setCurrentRow(1)
         self.assertEqual(self.window.asr_text.toPlainText(), "第一段")
-        self.window.receive_record("asr", {
-            "request_id": "two", "text": "第二段更新", "stamp_ns": 1,
-        })
+        self.window.receive_record(
+            "asr",
+            {
+                "request_id": "two",
+                "text": "第二段更新",
+                "stamp_ns": 1,
+            },
+        )
         self.assertEqual(self.window.asr_text.toPlainText(), "第一段")
 
     def test_failed_parse_never_displays_an_executable_candidate(self):
-        self.window.receive_record("parse", {
-            "request_id": "one", "success": True, "outcome": 0,
-            "candidate": {"task_type": 1, "destination_station_id": "station_a"},
-        })
+        self.window.receive_record(
+            "parse",
+            {
+                "request_id": "one",
+                "success": True,
+                "outcome": 0,
+                "candidate": {"task_type": 1, "destination_station_id": "station_a"},
+            },
+        )
         self.assertIn("station_a", self.window.candidate_text.toPlainText())
-        self.window.receive_record("parse", {
-            "request_id": "two", "success": False, "outcome": 3,
-            "candidate": {"task_type": 1, "destination_station_id": "station_b"},
-            "error_code": "LLM_UNAVAILABLE",
-        })
+        self.window.receive_record(
+            "parse",
+            {
+                "request_id": "two",
+                "success": False,
+                "outcome": 3,
+                "candidate": {"task_type": 1, "destination_station_id": "station_b"},
+                "error_code": "LLM_UNAVAILABLE",
+            },
+        )
         self.assertEqual(self.window.candidate_text.toPlainText(), "")
         self.assertIn("LLM_UNAVAILABLE", self.window.result_message.text())
 

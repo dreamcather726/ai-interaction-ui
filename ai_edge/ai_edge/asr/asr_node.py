@@ -73,7 +73,12 @@ class ASRNode(Node):
         self.get_logger().info("ASR 模型正在后台加载，请等待“模型已就绪”再录音")
 
     def poll(self):
-        """在 ROS 线程回收后台结果，更新就绪状态并处理等待超时。"""
+        """定时回收后台任务；模型初始化与单次识别分别检查。"""
+        self._poll_model_loading()
+        self._poll_recognition()
+
+    def _poll_model_loading(self):
+        """初始化 Future 完成后才设置 ready；异常转为故障并保留堆栈。"""
         if self.loading is not None and self.loading.done():
             try:
                 self.loading.result()
@@ -84,7 +89,9 @@ class ASRNode(Node):
                 )
             except Exception as exc:
                 self.load_error = exc
-                self.get_logger().error(f"ASR 模型不可用：{exc}\n{traceback.format_exc()}")
+                self.get_logger().error(
+                    f"ASR 模型不可用：{exc}\n{traceback.format_exc()}"
+                )
             self.loading = None
             self.publish_health()
         if self.loading is not None and time.monotonic() - self.last_load_log >= 10:
@@ -93,6 +100,9 @@ class ASRNode(Node):
                 f"ASR 初始化仍在进行，已等待 {self.last_load_log - self.load_started:.0f} 秒；"
                 "尚未就绪，请关注上方依赖导入与模型下载／加载输出"
             )
+
+    def _poll_recognition(self):
+        """回收推理结果或结束超时等待，不强行中断仍在运行的模型线程。"""
         if self.pending is None:
             return
         job = self.pending

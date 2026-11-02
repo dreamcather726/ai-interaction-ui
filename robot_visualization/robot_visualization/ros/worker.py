@@ -49,7 +49,9 @@ class RosWorker(QThread):
                 self.node.poll()
             if not self.isInterruptionRequested():
                 existing = set(self.node.get_node_names())
-                self.report_log("已发现节点：" + ("、".join(sorted(existing)) or "暂无"))
+                self.report_log(
+                    "已发现节点：" + ("、".join(sorted(existing)) or "暂无")
+                )
                 self.manager.start(existing)
                 self.node.owned_nodes = set(self.manager.children)
             while rclpy.ok() and not self.isInterruptionRequested():

@@ -3,7 +3,6 @@
 import threading
 from datetime import datetime
 
-
 _OUTPUT_LOCK = threading.Lock()
 
 

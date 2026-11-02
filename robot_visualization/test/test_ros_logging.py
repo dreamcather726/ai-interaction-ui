@@ -6,7 +6,6 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-
 ROS_AVAILABLE = importlib.util.find_spec("rclpy") is not None
 if ROS_AVAILABLE:
     import rclpy
@@ -26,7 +25,10 @@ class ConsoleStatusTests(unittest.TestCase):
 
     def setUp(self):
         self.events = SimpleNamespace(
-            report_log=Mock(), record=Mock(), availability=Mock(), control=Mock(),
+            report_log=Mock(),
+            record=Mock(),
+            availability=Mock(),
+            control=Mock(),
         )
         self.node = DashboardNode(self.events)
 

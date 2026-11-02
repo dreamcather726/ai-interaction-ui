@@ -23,7 +23,11 @@ class FunASRBackend:
     """复用一次加载的 SenseVoice 模型，不在每个请求中重新加载权重。"""
 
     def __init__(
-        self, model="iic/SenseVoiceSmall", device="cpu", language="zh", ncpu=4,
+        self,
+        model="iic/SenseVoiceSmall",
+        device="cpu",
+        language="zh",
+        ncpu=4,
         progress=None,
     ):
         self.model_name = model
