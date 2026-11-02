@@ -3,7 +3,7 @@
 import json
 import time
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -251,6 +251,7 @@ class DashboardWindow(QMainWindow):
         self.refresh_controls()
         self.stop_requested.emit()
 
+    @Slot(dict)
     def control_result(self, value):
         self.control_pending = False
         self.control_message.setText(value.get("message", ""))
@@ -258,6 +259,7 @@ class DashboardWindow(QMainWindow):
         # 成功回执不替代设备的实际录音状态；等待下一次状态广播。
         self.refresh_controls()
 
+    @Slot(dict)
     def receive_availability(self, value):
         """接收 ROS 线程的状态快照；recording=None 表示设备状态未确认。"""
         previous = self.availability.get("recording")
@@ -300,6 +302,7 @@ class DashboardWindow(QMainWindow):
                 self.show_record()
             self.query_requested.emit(request_id)
 
+    @Slot(str, dict)
     def receive_record(self, kind, value):
         request_id = value.get("request_id")
         is_new = request_id not in self.store.records
@@ -396,6 +399,7 @@ class DashboardWindow(QMainWindow):
         )
         self.file_label.setToolTip(json.dumps(state, ensure_ascii=False, indent=2))
 
+    @Slot(str)
     def append_log(self, text):
         if text:
             self.logs.appendPlainText(str(text))
@@ -416,6 +420,7 @@ class DashboardWindow(QMainWindow):
         self.can_close = True
         QTimer.singleShot(0, self.close)
 
+    @Slot()
     def on_worker_finished(self):
         if self.closing:
             self.finish_close()

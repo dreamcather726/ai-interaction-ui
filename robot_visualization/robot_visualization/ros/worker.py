@@ -39,8 +39,8 @@ class RosWorker(QThread):
 
     def run(self):
         executor = SingleThreadedExecutor()
-        executor.add_node(self.node)
         try:
+            executor.add_node(self.node)
             self.report_log("通信线程已启动，正在发现已有 ROS 节点与服务……")
             # 给 DDS 发现已有节点留出时间，避免重复创建用户已启动的进程。
             until = time.monotonic() + 1.5
@@ -72,8 +72,13 @@ class RosWorker(QThread):
         except Exception as exc:
             self.report_log(f"工作台后端异常：{exc}\n{traceback.format_exc()}")
         finally:
-            self.report_log("通信线程开始退出，正在停止录音并清理后台资源……")
-            # 对外部设备，只结束本窗口明确发起的录音，不关闭外部进程。
+            self.cleanup(executor)
+
+    def cleanup(self, executor):
+        """任何一个清理步骤失败，都继续关闭本窗口拥有的节点及 ROS 资源。"""
+        self.report_log("通信线程开始退出，正在停止录音并清理后台资源……")
+        # 对外部设备，只结束本窗口明确发起的录音，不关闭外部进程。
+        try:
             if (
                 rclpy.ok()
                 and self.node.started_recording
@@ -84,9 +89,18 @@ class RosWorker(QThread):
                 while "control" in self.node.pending and time.monotonic() < until:
                     executor.spin_once(timeout_sec=0.05)
                     self.node.poll()
-            self.manager.close()
-            self.node.close()
-            executor.remove_node(self.node)
-            self.node.destroy_node()
-            executor.shutdown()
-            self.report_log("通信线程已退出")
+        except Exception as exc:
+            self.report_log(f"停止外部录音时发生异常，继续清理：{exc}")
+        steps = (
+            ("后台进程组", self.manager.close),
+            ("挂起的 ROS 请求", self.node.close),
+            ("执行器节点", lambda: executor.remove_node(self.node)),
+            ("ROS 节点", self.node.destroy_node),
+            ("ROS 执行器", executor.shutdown),
+        )
+        for name, close in steps:
+            try:
+                close()
+            except Exception as exc:
+                self.report_log(f"清理{name}时发生异常，继续后续清理：{exc}")
+        self.report_log("通信线程已退出")

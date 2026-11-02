@@ -9,6 +9,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
@@ -34,6 +35,7 @@ class BackendSupervisor:
     def __init__(self, config):
         self.config = config
         self.children = {}
+        self.external_nodes = set()
         self.readers = []
         self.lines = queue.Queue(maxsize=2000)
         self.lock_file = None
@@ -165,7 +167,10 @@ class BackendSupervisor:
         self.ensure_ollama()
         for name, command in self.plans():
             if name in existing:
-                self.emit(f"沿用已有节点：{name}，该进程继续使用原来的参数")
+                self.external_nodes.add(name)
+                self.emit(
+                    f"沿用外部节点：{name}，继续使用原参数；关闭本窗口时保留该进程"
+                )
             else:
                 self.spawn(name, command)
 
@@ -195,8 +200,19 @@ class BackendSupervisor:
         self.emit(f"准备启动 {name}：{shlex.join(command)}")
         child_env = dict(os.environ if env is None else env)
         child_env.update(PYTHONUNBUFFERED="1", RCUTILS_LOGGING_BUFFERED_STREAM="0")
+        launch_command = command
+        if sys.platform.startswith("linux"):
+            # 保护进程继承同一输出管道；界面崩溃时也会结束节点进程组。
+            launch_command = [
+                sys.executable,
+                "-m",
+                "robot_visualization.runtime.process_guard",
+                str(os.getpid()),
+                "--",
+                *command,
+            ]
         process = subprocess.Popen(
-            command,
+            launch_command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -240,7 +256,7 @@ class BackendSupervisor:
             (signal.SIGTERM, 1.0),
             (signal.SIGKILL, 0.3),
         ):
-            live = [p for p in self.children.values() if p.poll() is None]
+            live = [p for p in self.children.values() if self.group_is_alive(p)]
             if live:
                 self.emit(f"向 {len(live)} 个后台进程发送 {sig.name}，等待退出")
             for process in live:
@@ -249,13 +265,38 @@ class BackendSupervisor:
                 except ProcessLookupError:
                     pass
             deadline = time.monotonic() + timeout
-            while any(p.poll() is None for p in live) and time.monotonic() < deadline:
+            while (
+                any(self.group_is_alive(p) for p in live)
+                and time.monotonic() < deadline
+            ):
                 time.sleep(0.03)
+        remaining = [
+            f"{name}(PGID={process.pid})"
+            for name, process in self.children.items()
+            if self.group_is_alive(process)
+        ]
         for reader in self.readers:
             reader.join(timeout=0.2)
-        self.emit("后台进程清理步骤结束")
+        if remaining:
+            self.emit("后台进程仍未完全退出：" + "、".join(remaining))
+        else:
+            self.emit("本窗口创建的后台进程组已全部退出")
+        if self.external_nodes:
+            self.emit("保留外部节点：" + "、".join(sorted(self.external_nodes)))
         with self.log_lock:
             if self.log_file:
                 self.log_file.close()
         if self.lock_file:
             self.lock_file.close()
+
+    @staticmethod
+    def group_is_alive(process):
+        """回收包装进程后仍检查进程组，避免漏掉存活的节点或推理线程。"""
+        process.poll()
+        try:
+            os.killpg(process.pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True

@@ -4,6 +4,7 @@ import signal
 import sys
 
 import rclpy
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from robot_visualization.ros.worker import RosWorker
@@ -16,10 +17,12 @@ def build_dashboard():
     """装配窗口与通信线程，供实际入口和 Qt 交互验收共用。"""
     worker = RosWorker()
     window = DashboardWindow(worker.config)
-    worker.record.connect(window.receive_record)
-    worker.availability.connect(window.receive_availability)
-    worker.control.connect(window.control_result)
-    worker.log.connect(window.append_log)
+    # GUI 接收方法必须在主线程排队执行，避免关闭窗口时跨线程访问 Qt 控件。
+    queued = Qt.ConnectionType.QueuedConnection
+    worker.record.connect(window.receive_record, queued)
+    worker.availability.connect(window.receive_availability, queued)
+    worker.control.connect(window.control_result, queued)
+    worker.log.connect(window.append_log, queued)
     window.start_requested.connect(lambda: worker.command("start"))
     window.stop_requested.connect(lambda: worker.command("stop"))
     window.query_requested.connect(lambda value: worker.command("query", value))
@@ -30,7 +33,7 @@ def build_dashboard():
             else window.finish_close()
         )
     )
-    worker.finished.connect(window.on_worker_finished)
+    worker.finished.connect(window.on_worker_finished, queued)
     return worker, window
 
 
