@@ -7,6 +7,7 @@ import rclpy
 from PySide6.QtWidgets import QApplication
 
 from robot_visualization.ros.worker import RosWorker
+from robot_visualization.runtime.console import console_log
 from robot_visualization.ui.theme import configure_font
 from robot_visualization.ui.window import DashboardWindow
 
@@ -34,6 +35,7 @@ def build_dashboard():
 
 
 def main(args=None):
+    console_log(f"正在启动语音工作台；Python={sys.executable}")
     rclpy.init(args=args)
     app = QApplication([sys.argv[0]])
     configure_font(app)
@@ -42,6 +44,7 @@ def main(args=None):
     signal.signal(signal.SIGINT, lambda signum, frame: window.close())
     signal.signal(signal.SIGTERM, lambda signum, frame: window.close())
     window.show()
+    console_log("工作台窗口已打开，正在启动后台；等待设备与 ASR 模型就绪")
     worker.start()
     try:
         app.exec()
@@ -50,3 +53,4 @@ def main(args=None):
         worker.wait()
         if rclpy.ok():
             rclpy.shutdown()
+        console_log("语音工作台已关闭")

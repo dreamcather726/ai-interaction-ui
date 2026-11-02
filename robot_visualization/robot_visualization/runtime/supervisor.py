@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from robot_visualization.runtime.console import console_log
+
 
 def ros_command(package, executable, parameters=None, python=""):
     command = ["ros2", "run"]
@@ -116,6 +118,7 @@ class BackendSupervisor:
         text = re.sub(r"\x1b\[[0-9;]*m", "", text).strip()
         if not text:
             return
+        console_log(text)
         try:
             self.lines.put_nowait(text)
         except queue.Full:
@@ -147,6 +150,18 @@ class BackendSupervisor:
             folder / f"dashboard_{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}.log"
         ).open("a", encoding="utf-8")
         self.config.audio_root.mkdir(parents=True, exist_ok=True)
+        self.emit(f"本次后台日志文件：{self.log_file.name}")
+        self.emit(f"音频保存目录：{self.config.audio_root}")
+        self.emit(f"ASR Python：{self.config.asr_python}")
+        self.emit(f"ASR 模型：{self.config.model_path}")
+        self.emit(f"语义模型：{self.config.model}；Ollama：{self.config.ollama_url}")
+        self.emit(
+            f"麦克风设备：{self.config.device}；"
+            f"ROS_DOMAIN_ID={os.getenv('ROS_DOMAIN_ID', '0')}"
+        )
+        self.emit(
+            f"白名单：{len(self.config.stations)} 个工位、{len(self.config.objects)} 个物料"
+        )
         self.ensure_ollama()
         for name, command in self.plans():
             if name in existing:
@@ -177,6 +192,9 @@ class BackendSupervisor:
             self.emit("未找到 Ollama，语义服务调用时会报告连接失败；请先安装 Ollama")
 
     def spawn(self, name, command, env=None):
+        self.emit(f"准备启动 {name}：{shlex.join(command)}")
+        child_env = dict(os.environ if env is None else env)
+        child_env.update(PYTHONUNBUFFERED="1", RCUTILS_LOGGING_BUFFERED_STREAM="0")
         process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,
@@ -187,7 +205,7 @@ class BackendSupervisor:
             errors="replace",
             bufsize=1,
             start_new_session=True,
-            env=env,
+            env=child_env,
         )
         self.children[name] = process
         reader = threading.Thread(
@@ -195,7 +213,7 @@ class BackendSupervisor:
         )
         reader.start()
         self.readers.append(reader)
-        self.emit(f"启动节点：{name}")
+        self.emit(f"节点进程已启动：{name}，PID={process.pid}；就绪状态等待后续广播")
 
     def read_output(self, name, process):
         try:
@@ -204,8 +222,8 @@ class BackendSupervisor:
         finally:
             process.stdout.close()
             code = process.wait()
-            if not self.stopping:
-                self.emit(f"节点已退出：{name}，退出码 {code}；不自动重启")
+            reason = "工作台关闭" if self.stopping else "未主动关闭，不自动重启"
+            self.emit(f"节点已退出：{name}，退出码 {code}；{reason}")
 
     def drain(self):
         for _ in range(100):
@@ -215,6 +233,7 @@ class BackendSupervisor:
                 break
 
     def close(self):
+        self.emit("正在关闭本窗口启动的后台进程……")
         self.stopping = True
         for sig, timeout in (
             (signal.SIGINT, 3.0),
@@ -222,6 +241,8 @@ class BackendSupervisor:
             (signal.SIGKILL, 0.3),
         ):
             live = [p for p in self.children.values() if p.poll() is None]
+            if live:
+                self.emit(f"向 {len(live)} 个后台进程发送 {sig.name}，等待退出")
             for process in live:
                 try:
                     os.killpg(process.pid, sig)
@@ -232,6 +253,7 @@ class BackendSupervisor:
                 time.sleep(0.03)
         for reader in self.readers:
             reader.join(timeout=0.2)
+        self.emit("后台进程清理步骤结束")
         with self.log_lock:
             if self.log_file:
                 self.log_file.close()

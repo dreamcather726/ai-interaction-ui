@@ -1,6 +1,8 @@
 """提供文件语音识别服务；模型推理在工作线程执行，不阻塞 ROS 回调。"""
 
+import sys
 import time
+import traceback
 import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -43,11 +45,17 @@ class ASRNode(Node):
             self.get_parameter("device").value,
             self.get_parameter("language").value,
             self.get_parameter("ncpu").value,
+            progress=self.get_logger().info,
         )
         self.ready = False
         self.load_error = None
         self.pending = None
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="funasr")
+        self.load_started = self.last_load_log = time.monotonic()
+        self.get_logger().info(
+            f"ASR 启动：Python={sys.executable}；音频目录={self.audio_root}；"
+            f"模型={self.backend.model_name}；device={self.backend.device}"
+        )
         self.loading = self.worker.submit(self.backend.load)
         self.health = ASRHealth(self)
         self.clock = Clock(clock_type=ClockType.STEADY_TIME)
@@ -70,12 +78,21 @@ class ASRNode(Node):
             try:
                 self.loading.result()
                 self.ready = True
-                self.get_logger().info("FunASR 模型已就绪，可以开始真实语音识别")
+                self.get_logger().info(
+                    f"FunASR 模型已就绪，初始化耗时 {time.monotonic() - self.load_started:.1f} 秒，"
+                    "可以开始真实语音识别"
+                )
             except Exception as exc:
                 self.load_error = exc
-                self.get_logger().error(f"ASR 模型不可用：{exc}")
+                self.get_logger().error(f"ASR 模型不可用：{exc}\n{traceback.format_exc()}")
             self.loading = None
             self.publish_health()
+        if self.loading is not None and time.monotonic() - self.last_load_log >= 10:
+            self.last_load_log = time.monotonic()
+            self.get_logger().info(
+                f"ASR 初始化仍在进行，已等待 {self.last_load_log - self.load_started:.0f} 秒；"
+                "尚未就绪，请关注上方依赖导入与模型下载／加载输出"
+            )
         if self.pending is None:
             return
         job = self.pending
@@ -95,6 +112,7 @@ class ASRNode(Node):
     async def recognize(self, request, response):
         """原样关联输入信息，异步等待真实识别结果并统一封装失败响应。"""
         result = response.result
+        started = time.monotonic()
         for field in (
             "request_id",
             "session_id",
@@ -122,7 +140,10 @@ class ASRNode(Node):
                 "response": answer,
                 "deadline": time.monotonic() + self.timeout,
             }
-            self.get_logger().info(f"开始识别，请求 ID：{request.request_id}")
+            self.get_logger().info(
+                f"开始识别，请求 ID：{request.request_id}；文件={request.audio_path}；"
+                f"音频 {len(pcm) / 32000:.2f} 秒；等待上限 {self.timeout:.1f} 秒"
+            )
             transcript = await answer
             result.text = transcript.text
             result.language = transcript.language
@@ -151,11 +172,14 @@ class ASRNode(Node):
         result.stamp = self.get_clock().now().to_msg()
         if result.success:
             self.get_logger().info(
-                f"识别完成，请求 ID：{request.request_id}，文字：{result.text}"
+                f"识别完成，请求 ID：{request.request_id}，"
+                f"耗时 {time.monotonic() - started:.2f} 秒，文字：{result.text}"
             )
         else:
             self.get_logger().warning(
-                f"识别未成功：{result.error_code}，{result.message}"
+                f"识别未成功，请求 ID：{request.request_id}，"
+                f"耗时 {time.monotonic() - started:.2f} 秒："
+                f"{result.error_code}，{result.message}"
             )
         return response
 
@@ -168,7 +192,7 @@ class ASRNode(Node):
 
 
 def main(args=None):
-    """启动文件 ASR 服务；推荐由已安装 FunASR 的虚拟环境执行。"""
+    """启动文件 ASR 服务；使用已安装 FunASR 的 Python 解释器。"""
     rclpy.init(args=args)
     node = None
     try:

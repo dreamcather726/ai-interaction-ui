@@ -23,16 +23,19 @@ class FunASRBackend:
     """复用一次加载的 SenseVoice 模型，不在每个请求中重新加载权重。"""
 
     def __init__(
-        self, model="iic/SenseVoiceSmall", device="cpu", language="zh", ncpu=4
+        self, model="iic/SenseVoiceSmall", device="cpu", language="zh", ncpu=4,
+        progress=None,
     ):
         self.model_name = model
         self.device = device
         self.language = language
         self.ncpu = ncpu
         self.model = None
+        self.progress = progress or (lambda message: None)
 
     def load(self):
         """加载官方集成模型；权重缓存留在运行机，不进入 Git 仓库。"""
+        self.progress("正在导入 FunASR 及其依赖（PyTorch、音频处理库等）……")
         try:
             from funasr import AutoModel
         except ImportError as exc:
@@ -40,6 +43,10 @@ class FunASRBackend:
                 "ASR_DEPENDENCY_MISSING", f"当前 Python 无法导入 FunASR：{exc}"
             ) from exc
         try:
+            self.progress(
+                f"FunASR 依赖导入成功；正在初始化模型 {self.model_name}，"
+                f"device={self.device}；缓存缺失时由模型库下载权重"
+            )
             self.model = AutoModel(
                 model=self.model_name,
                 device=self.device,

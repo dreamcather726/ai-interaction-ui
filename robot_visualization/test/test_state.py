@@ -1,5 +1,10 @@
 """界面关联与进程命令规则回归，不依赖图形环境或硬件。"""
 
+import contextlib
+import io
+import queue
+import sys
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +65,38 @@ class StoreTests(unittest.TestCase):
 
 
 class SupervisorRulesTests(unittest.TestCase):
+    def test_child_output_reaches_console_before_process_exits(self):
+        manager = BackendSupervisor(SimpleNamespace())
+        output = io.StringIO()
+        manager.log_file = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            manager.spawn("probe", [
+                sys.executable, "-c",
+                "import time; print('UNBUFFERED_CHILD_READY'); time.sleep(30)",
+            ])
+            process = manager.children["probe"]
+            try:
+                deadline = time.monotonic() + 5
+                received = False
+                while time.monotonic() < deadline:
+                    try:
+                        line = manager.lines.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if "[probe] UNBUFFERED_CHILD_READY" in line:
+                        received = True
+                        break
+                self.assertTrue(received, "子进程首条输出被缓冲，未能实时送达")
+                self.assertIsNone(process.poll())
+            finally:
+                process.terminate()
+                process.wait(timeout=5)
+                for reader in manager.readers:
+                    reader.join(timeout=5)
+        marker = "[probe] UNBUFFERED_CHILD_READY"
+        self.assertEqual(output.getvalue().count(marker), 1)
+        self.assertIn(marker, manager.log_file.getvalue())
+
     def test_commands_keep_arguments_out_of_shell(self):
         args = ros_command(
             "ai_edge",

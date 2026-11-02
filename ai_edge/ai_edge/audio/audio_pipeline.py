@@ -66,6 +66,10 @@ class AudioPipeline:
         before = len(self.queue)
         outcome = self.queue.enqueue(msg, path, pcm, active=self.active is not None)
         if len(self.queue) > before:
+            self.node.get_logger().info(
+                f"音频入队，请求 ID：{msg.request_id}；文件={path}；"
+                f"等待队列 {len(self.queue)} 条"
+            )
             self.visualization.state(
                 {"msg": msg, "path": path.resolve()},
                 AudioProcessingState.QUEUED,
@@ -76,7 +80,8 @@ class AudioPipeline:
     def stage(self, name, timeout):
         """记录当前阶段与单调时钟截止时间。"""
         self.active["stage"] = name
-        self.active["deadline"] = time.monotonic() + timeout
+        self.active["stage_started"] = self.active["last_progress"] = time.monotonic()
+        self.active["deadline"] = self.active["stage_started"] + timeout
         stages = {
             "asr_wait": (AudioProcessingState.WAITING_ASR, "等待 ASR 服务"),
             "asr_result": (AudioProcessingState.RECOGNIZING, "正在识别语音"),
@@ -84,6 +89,10 @@ class AudioPipeline:
             "parse_goal": (AudioProcessingState.PARSING, "已提交语义解析请求"),
             "parse_result": (AudioProcessingState.PARSING, "正在进行语义解析"),
         }
+        self.node.get_logger().info(
+            f"请求 {self.active['msg'].request_id}：{stages[name][1]}；"
+            f"本阶段等待上限 {timeout:.1f} 秒"
+        )
         self.visualization.state(self.active, *stages[name])
 
     def fail(self, code, message):
@@ -136,8 +145,9 @@ class AudioPipeline:
             self.stage("asr_wait", 3.0)
         job = self.active
         stage = job["stage"]
+        now = time.monotonic()
         # 超时只结束本次等待，不能把未知结果当作成功或自动重试。
-        if time.monotonic() >= job["deadline"]:
+        if now >= job["deadline"]:
             if stage == "asr_result":
                 self.asr.remove_pending_request(job["future"])
                 job["future"].cancel()
@@ -152,6 +162,14 @@ class AudioPipeline:
             )
             self.fail(code, "AI 处理阶段等待超时；结果尚未确认，不自动重试")
             return
+        if now - job["last_progress"] >= 10:
+            job["last_progress"] = now
+            name = "语义解析" if stage.startswith("parse") else "语音识别"
+            self.node.get_logger().info(
+                f"请求 {job['msg'].request_id}：仍在等待{name}结果，"
+                f"本阶段已等待 {now - job['stage_started']:.0f} 秒，"
+                f"距离等待超时还有 {job['deadline'] - now:.0f} 秒"
+            )
         # 依次推进：等待 ASR → 识别结果 → 等待语义模型 → Goal → 最终结果。
         if stage == "asr_wait" and self.asr.service_is_ready():
             msg = job["msg"]
@@ -215,7 +233,8 @@ class AudioPipeline:
         if not valid:
             self.fail(result.error_code, result.message)
             return
-        save_asr_text(job["path"], result.text)
+        text_path = save_asr_text(job["path"], result.text)
+        self.node.get_logger().info(f"识别文字已保存：{text_path}")
         job["text"] = result.text
         self.report(job, "/ai/recognize_audio", True, result.text)
         if not self.node.get_parameter("enable_semantic").value:

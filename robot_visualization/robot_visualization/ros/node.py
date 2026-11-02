@@ -20,6 +20,7 @@ from robot_interfaces.msg import (
 )
 from robot_interfaces.srv import ProcessAudio, QueryAudio, RecognizeAudio
 from robot_visualization.config import DashboardConfig
+from robot_visualization.state import STAGES
 
 
 def payload(message):
@@ -44,6 +45,7 @@ class DashboardNode(Node):
         self.components = {}
         self.sequences = {}
         self.last_availability = 0.0
+        self.last_status_log = {}
         self.owned_nodes = set()
         self.started_recording = False
         self.subscriptions_list = [
@@ -77,7 +79,7 @@ class DashboardNode(Node):
 
     def on_receipt(self, message):
         tag = "成功" if message.success else message.error_code or "失败"
-        self.events.log.emit(
+        self.events.report_log(
             f"[{message.operation}] {tag} · {message.message} · {message.request_id}"
         )
 
@@ -90,7 +92,7 @@ class DashboardNode(Node):
             "microphone_sender_node",
         }
         if message.name in names and message.name not in self.owned_nodes:
-            self.events.log.emit(f"[{message.name}] {message.msg}")
+            self.events.report_log(f"[{message.name}] {message.msg}")
 
     def on_state(self, message):
         key = (message.source_node, message.boot_id, message.request_id)
@@ -101,6 +103,11 @@ class DashboardNode(Node):
         if len(self.sequences) > 1024:
             self.sequences.pop(next(iter(self.sequences)))
         self.events.record.emit("state", payload(message))
+        stage_name = STAGES.get(message.stage, (str(message.stage), "idle"))[0]
+        self.events.report_log(
+            f"音频处理 [{message.request_id}]：{stage_name}；{message.message}"
+            + (f"；错误码={message.error_code}" if message.error_code else "")
+        )
         if previous == 0 or message.event_seq > previous + 1 or message.stage >= 5:
             self.request_query(message.request_id)
 
@@ -109,11 +116,13 @@ class DashboardNode(Node):
             return
         client = self.start_client if operation == "start" else self.stop_client
         if not client.service_is_ready():
+            self.events.report_log(f"录音请求 {operation} 未发送：设备服务尚未发现")
             self.events.control.emit(
                 {"success": False, "message": "录音服务尚未发现，请等待设备连接"}
             )
             return
         future = client.call_async(Trigger.Request())
+        self.events.report_log(f"已发送录音请求：{operation}，等待设备响应（最多 3 秒）")
         self.pending["control"] = (client, future, time.monotonic() + 3.0, operation)
 
     def request_query(self, request_id):
@@ -121,7 +130,7 @@ class DashboardNode(Node):
         if key in self.pending or not self.query_client.service_is_ready():
             return
         if len(self.pending) >= 20:
-            self.events.log.emit("查询请求过多，请稍后再试")
+            self.events.report_log("查询请求过多，请稍后再试")
             return
         request = QueryAudio.Request()
         request.stamp = self.get_clock().now().to_msg()
@@ -146,6 +155,10 @@ class DashboardNode(Node):
                     else:
                         if response.success:
                             self.started_recording = operation == "start"
+                        self.events.report_log(
+                            f"录音请求 {operation} 返回："
+                            f"{'成功' if response.success else '失败'}；{response.message}"
+                        )
                         self.events.control.emit(
                             {"success": response.success, "message": response.message}
                         )
@@ -161,14 +174,13 @@ class DashboardNode(Node):
             self.publish_availability(now)
 
     def report_error(self, operation, message):
-        if operation == "query":
-            self.events.log.emit(message)
-        else:
+        self.events.report_log(f"操作 {operation} 失败：{message}")
+        if operation != "query":
             self.events.control.emit({"success": False, "message": message})
 
     def accept_snapshot(self, response):
         if not response.success or not response.found:
-            self.events.log.emit(f"快照查询：{response.error_code} {response.message}")
+            self.events.report_log(f"快照查询：{response.error_code} {response.message}")
             return
         self.events.record.emit("state", payload(response.state))
         if response.asr_available:
@@ -217,6 +229,35 @@ class DashboardNode(Node):
             "processor": available(self.process_client.service_is_ready()),
             "receiver": available("audio_receiver_node" in self.get_node_names()),
         }
+        names = {
+            "microphone": "麦克风", "asr": "语音识别", "parser": "语义解析",
+            "processor": "AI 编排", "receiver": "音频接收",
+        }
+        for name, status in services.items():
+            self.log_status_change(name, status, f"服务状态：{names[name]} → {status[0]}")
+        blockers = []
+        if not start:
+            blockers.append("录音开始服务未连接")
+        if recording is None:
+            blockers.append("麦克风录音状态未确认")
+        elif recording:
+            blockers.append("麦克风正在录音")
+        if not ready:
+            blockers.append("ASR 模型未就绪")
+        reason = "；".join(blockers)
+        self.log_status_change(
+            "recording_gate", reason,
+            f"开始录音暂不可用：{reason}" if reason else "设备与 ASR 已就绪，可以开始录音",
+        )
+        for name, component in (("asr", asr), ("microphone", microphone)):
+            if component and component.error_code:
+                detail = (component.error_code, component.message)
+                self.log_status_change(
+                    name + "_error", detail,
+                    f"{names[name]}异常：{component.error_code}；{component.message}",
+                )
+            else:
+                self.last_status_log.pop(name + "_error", None)
         self.events.availability.emit(
             {
                 "services": services,
@@ -235,6 +276,12 @@ class DashboardNode(Node):
                 ),
             }
         )
+
+    def log_status_change(self, key, value, message):
+        """只打印实际变化；0.4 秒轮询和心跳不重复输出相同提示。"""
+        if key not in self.last_status_log or self.last_status_log[key] != value:
+            self.last_status_log[key] = value
+            self.events.report_log(message)
 
     def close(self):
         for client, future, _, _ in self.pending.values():
