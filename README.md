@@ -47,7 +47,7 @@ src/
 
 `resource/ai_edge` 是 ROS 功能包发现所需的标记文件，保留为空即可；业务代码放在上面的 Python 子包中。各子包包含 `__init__.py`，由 setup.py 的 find_packages 自动安装。
 
-目录调整后重新构建并加载工作空间。`ros2 run` 的包名及可执行名称保持原样，Python 模块启动和脚本直接启动改用新路径：
+目录调整后重新构建并加载工作空间，所有节点统一使用 `ros2 run` 启动：
 
 ```bash
 cd ~/ai_interaction_ws
@@ -55,10 +55,10 @@ source /opt/ros/humble/setup.bash
 colcon build --packages-up-to ai_interface ai_edge --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
 
-# 在已激活 FunASR 环境的终端启动 ASR；参数沿用下文配置
-python -m ai_edge.asr.asr_node
-# 设备侧程序可以直接通过 Python 启动
-python3 src/ai_interface/ai_interface/devices/microphone_sender_node.py
+# ASR 使用已有 FunASR 环境的解释器；参数沿用下文配置
+ros2 run --prefix "$HOME/venvs/ros2_audio/bin/python" ai_edge asr_node
+# 在另一个终端启动设备侧程序
+ros2 run ai_interface microphone_sender_node
 ```
 
 2026-11-02 目录整理验收：20 个迁移模块的业务 AST 保持一致；WSL Humble 临时工作空间 `/tmp/ai-layout-wYjgzT` 中三个包构建、全部子包导入、五个既有可执行入口和 16 项规则测试通过。使用已有真实录音验证了接口接收保存→AI 交接→真实 FunASR→千问 2B→文件、广播和查询，Action 的澄清、取消、忙碌拒绝、超时及错误恢复也通过；本次未采集新的硬件录音。
@@ -132,7 +132,7 @@ source install/setup.bash
 # 终端一
 ros2 run ai_interface audio_receiver_node
 # 终端二
-python3 src/ai_interface/ai_interface/devices/microphone_sender_node.py
+ros2 run ai_interface microphone_sender_node
 ```
 
 终端三开始录音，说完后停止并发送：
@@ -146,7 +146,7 @@ ros2 service call /audio/stop_recording std_srvs/srv/Trigger "{}"
 
 ```bash
 pactl list short sources
-python3 src/ai_interface/ai_interface/devices/microphone_sender_node.py --ros-args -p device:=RDPSource
+ros2 run ai_interface microphone_sender_node --ros-args -p device:=RDPSource
 ```
 
 开始回执成功只表示 parecord 进程已启动，设备初始化失败由节点日志报告。停止回执成功表示真实音频已发布；接收落盘仍查看 `/ai/request_status`。采集最多 10 秒／320000 字节，后台持续读取管道，达到上限自动停止并发送。停止总会终止采集：没有接收者或无音频时返回失败并丢弃，不伪造结果；重复停止不重发，节点退出会停止采集并丢弃未发送数据。尚未使用会话管理时默认生成 mic-session／mic-context 标识，仅用于独立录音链路测试；接入任务系统后用 session_id、input_context_id 参数传入当前有效上下文。
@@ -231,15 +231,15 @@ RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来�
 
 音频处理源文件统一使用 4 空格缩进、88 字符目标行宽和分组导入，职责说明、关键步骤注释以及程序自身的运行提示采用中文。ROS 节点名、Topic／Service／Action 名称、字段名和稳定错误码保持原值；外部模型返回的识别文字、说明及底层系统错误不会被自动翻译。
 
-麦克风发送程序已补充 Python 直接运行入口，在工作空间根目录执行：
+麦克风发送节点通过已注册的 ROS 可执行入口启动，在工作空间根目录执行：
 
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-python3 src/ai_interface/ai_interface/devices/microphone_sender_node.py
+ros2 run ai_interface microphone_sender_node
 ```
 
-它仍是 ROS 2 节点，仍需已构建的 robot_interfaces；只是无需通过 ros2 run 启动。原 ros2 run 入口也保留兼容。
+该命令使用安装后的节点入口，仍需已构建的 robot_interfaces。ASR、语义解析、音频编排和接收节点同样通过 ros2 run 启动。
 
 2026-11-01 已在 WSL Humble 验证两个业务包构建、完整通信契约回归、中文 INFO 输出、Python 直接启动和正常退出；本次未启动实际麦克风采集或真实模型推理。
 
@@ -273,14 +273,15 @@ source install/setup.bash
 cd ~/ai_interaction_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-source ~/venvs/ros2_audio/bin/activate
-python -m ai_edge.asr.asr_node --ros-args \
+ros2 run --prefix "$HOME/venvs/ros2_audio/bin/python" ai_edge asr_node --ros-args \
   -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
   -p model_path:=/home/tao/.cache/modelscope/models/iic--SenseVoiceSmall/snapshots/master \
   -p device:=cpu
 ```
 
-路径不同的机器替换实际环境与模型目录；也可设置 model_path:=iic/SenseVoiceSmall 按需下载到用户缓存。模型约 936 MB，首次下载／加载完成前状态为 STARTING，日志提示“FunASR 模型已就绪”后再发起录音。使用 python -m 是为了明确使用安装了 FunASR 的环境；由系统 Python 生成的 ros2 run 脚本未必能访问虚拟环境。代码仍注册 asr_node 的 ROS 可执行入口。
+路径不同的机器替换实际环境与模型目录；也可设置 model_path:=iic/SenseVoiceSmall 按需下载到用户缓存。模型约 936 MB，首次下载／加载完成前状态为 STARTING，日志提示“FunASR 模型已就绪”后再发起录音。`--prefix` 让 ros2 run 使用已安装 FunASR 的虚拟环境解释器执行节点入口，无需激活环境；仅激活环境不一定能改变已构建脚本的解释器。若构建节点所用的 Python 本身已安装 FunASR，可省略 --prefix，直接运行 `ros2 run ai_edge asr_node`。
+
+2026-11-02 已在 WSL Humble 隔离 ROS Domain 中实际通过 ros2 run 启动五个节点，并确认上述 ASR 命令加载真实模型后就绪；测试进程均已退出，本次没有启动麦克风录音。
 
 终端二启动 AI 编排。只验收 ASR 时关闭语义步骤；完整语义链路见下一节：
 
