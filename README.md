@@ -41,6 +41,8 @@ GUI 依赖固定为 PySide6 6.8.3，直接安装到系统 Python 的用户目录
 
 完整参数、白名单、香橙派模式、模块说明及验证见 [前端工作台使用说明](docs/前端工作台_使用说明.md)。
 
+支持同一会话中的多轮任务澄清：先保存缺参候选并追问，再结合下一轮回答补全，完整候选仍需后续准备和确认。实现逻辑、上下文边界及手动测试步骤见[多轮任务澄清](docs/多轮任务澄清.md)。
+
 ### 源码目录导航
 
 业务代码按职责放入 Python 子包，四个 ROS 功能包仍放在工作空间的 src 下：
@@ -226,7 +228,7 @@ audio_root 必须覆盖接口保存目录，AI 端会拒绝目录外文件；白
 
 AI 端的 audio_pipeline.py 调用 `/ai/recognize_audio`（RecognizeAudio Service）和 `/ai/parse_task`（ParseTask Action）。ASR 已接入 FunASR/SenseVoiceSmall，语义解析由下文的 Ollama/qwen3.5:2b 提供；ASR 权重放在本仓库的 `models/SenseVoiceSmall`，不作为源码提交。语音识别及后续处理都在 ai_edge 职责范围内，接口端没有 ASR 客户端。
 
-RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来源、时间、状态与实际文本；成功后写同名 .txt，失败／静音不进入语义解析。ParseTask 使用 audio:+segment_id、原会话／上下文与配置白名单，结果写同名 .parse.json。只有真实模型返回的内容才会保存；该结果不等于已准备、确认或执行任务。当前按独立单句处理，澄清问题只输出供交互层使用。
+RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来源、时间、状态与实际文本；成功后写同名 .txt，失败／静音不进入语义解析。ParseTask 使用 audio:+segment_id、原会话／上下文与配置白名单，结果写同名 .parse.json。待澄清候选由 AI 编排按 session_id/input_context_id 保存，并在下一轮通过 context/partial_candidate 传给模型；字段经过规则合并及独立校验，结果不等于已准备、确认或执行任务。
 
 `/ai/request_status` 按 request_id、source_node、operation 区分保存、AI受理、ASR和语义阶段；`/ai/asr_text` 由 AI 端发布，仅作结果输出，不触发第二条解析链。
 

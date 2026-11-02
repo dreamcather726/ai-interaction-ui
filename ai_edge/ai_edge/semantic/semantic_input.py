@@ -1,8 +1,8 @@
 """把 ROS Goal 转换为受限的纯 Python 输入，不调用模型。"""
 
 from ai_edge.semantic.semantic_contract import (
-    ID_FIELDS,
     SemanticError,
+    candidate_payload,
     validate_candidate,
 )
 
@@ -47,13 +47,8 @@ def read_parse_goal(goal):
         or sum(len(t["text"]) for t in context) + len(goal.text) > 12000
     ):
         raise SemanticError("INVALID_REQUEST", "对话超过 20 条或总文字超过 12000 字符")
-    names = {0: "UNKNOWN", 1: "NAVIGATE", 2: "TRANSPORT"}
     source = goal.partial_candidate
-    partial = {field: getattr(source, field) for field in ID_FIELDS}
-    partial.update(
-        task_type=names.get(source.task_type, "INVALID"),
-        return_required=source.return_required,
-    )
+    partial = candidate_payload(source)
     checked = validate_candidate(partial, stations, objects)
     if source.task_type != source.UNKNOWN and not context:
         raise SemanticError(

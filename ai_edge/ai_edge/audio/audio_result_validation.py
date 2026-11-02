@@ -2,6 +2,11 @@
 
 from action_msgs.msg import GoalStatus
 
+from ai_edge.semantic.semantic_contract import (
+    SemanticError,
+    candidate_payload,
+    validate_candidate,
+)
 from robot_interfaces.action import ParseTask
 from robot_interfaces.msg import RecognizedText, TaskCandidate
 
@@ -106,6 +111,19 @@ def validate_parse_result(msg, wrapped, stations, objects):
         and result.missing_fields
         and result.clarification_question.strip()
     )
+    if clarification:
+        try:
+            checked = validate_candidate(
+                candidate_payload(result.candidate), stations, objects
+            )
+        except SemanticError as exc:
+            raise ResultValidationError("INVALID_MODEL_OUTPUT", str(exc)) from exc
+        if checked.unsupported or list(checked.missing_fields) != list(
+            result.missing_fields
+        ):
+            raise ResultValidationError(
+                "INVALID_MODEL_OUTPUT", "追问的缺失字段与候选实际内容不一致"
+            )
     terminal_failure = (
         not result.success
         and bool(result.error_code)

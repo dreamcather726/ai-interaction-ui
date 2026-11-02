@@ -30,6 +30,37 @@ SCHEMA = {
 }
 
 
+def candidate_payload(source):
+    """将 ROS 候选转换成模型和规则层使用的普通字典。"""
+    names = {0: "UNKNOWN", 1: "NAVIGATE", 2: "TRANSPORT"}
+    return {
+        "task_type": names.get(source.task_type, "INVALID"),
+        **{field: getattr(source, field) for field in ID_FIELDS},
+        "return_required": source.return_required,
+    }
+
+
+def reconcile_candidate(data, partial):
+    """续轮保留已知字段，只允许补缺；修改已有目标须显式重开任务。"""
+    if not partial or data["task_type"] == "UNKNOWN":
+        return data
+    if data["task_type"] != partial["task_type"] or (
+        data["return_required"] != partial["return_required"]
+    ):
+        raise SemanticError(
+            "DIALOGUE_CONFLICT", "补充内容改变了原任务类型或返回要求，请先说“重新开始”"
+        )
+    merged = dict(data)
+    for field in ID_FIELDS:
+        previous, current = partial[field], data[field].strip()
+        if previous and current and previous != current:
+            raise SemanticError(
+                "DIALOGUE_CONFLICT", f"补充内容与已有 {field} 冲突，请先说“重新开始”"
+            )
+        merged[field] = previous or current
+    return merged
+
+
 @dataclass(frozen=True)
 class SemanticAnswer:
     candidate: dict
@@ -85,4 +116,6 @@ def validate_candidate(data, stations, objects):
     question = (
         "请补充" + "、".join(labels[f] for f in missing) + "。" if missing else ""
     )
+    if missing == ("object_id",):
+        question = "要搬运哪个物料？"
     return SemanticAnswer(candidate, missing, question)

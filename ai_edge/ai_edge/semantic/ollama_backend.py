@@ -6,7 +6,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
-from ai_edge.semantic.semantic_contract import SCHEMA, SemanticError, validate_candidate
+from ai_edge.semantic.semantic_contract import (
+    SCHEMA,
+    SemanticError,
+    reconcile_candidate,
+    validate_candidate,
+)
 from ai_edge.semantic.semantic_prompt import build_messages
 
 
@@ -94,4 +99,7 @@ class OllamaBackend:
             raise SemanticError(
                 "INVALID_MODEL_OUTPUT", "模型未返回完整的任务 JSON"
             ) from exc
-        return validate_candidate(candidate, stations, objects)
+        # 先校验原始输出，再补回模型遗漏的已有字段，最后重新检查完整候选。
+        checked = validate_candidate(candidate, stations, objects)
+        merged = reconcile_candidate(checked.candidate, partial)
+        return validate_candidate(merged, stations, objects)

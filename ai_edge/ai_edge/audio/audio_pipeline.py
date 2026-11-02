@@ -1,7 +1,9 @@
 """AI 端音频处理调度：依次调用 ASR 和语义解析，不直接实现模型。"""
 
 import time
+from types import SimpleNamespace
 
+from action_msgs.msg import GoalStatus
 from rclpy.action import ActionClient
 from rclpy.clock import Clock, ClockType
 from rclpy.parameter import Parameter
@@ -13,9 +15,21 @@ from ai_edge.audio.audio_result_validation import (
     validate_asr_result,
     validate_parse_result,
 )
+from ai_edge.semantic.dialogue import DialogueStore, dialogue_command
+from ai_edge.semantic.semantic_contract import (
+    SemanticError,
+    candidate_payload,
+    reconcile_candidate,
+    validate_candidate,
+)
 from ai_edge.visualization.audio_visualization import AudioVisualization
 from robot_interfaces.action import ParseTask
-from robot_interfaces.msg import AudioProcessingState, RecognizedText, RequestStatus
+from robot_interfaces.msg import (
+    AudioProcessingState,
+    DialogueTurn,
+    RecognizedText,
+    RequestStatus,
+)
 from robot_interfaces.srv import RecognizeAudio
 
 
@@ -28,12 +42,16 @@ class AudioPipeline:
         node.declare_parameter("enable_semantic", True)
         node.declare_parameter("asr_timeout", 30.0)
         node.declare_parameter("parse_timeout", 30.0)
+        node.declare_parameter("clarification_timeout", 300.0)
         node.declare_parameter("allowed_station_ids", Parameter.Type.STRING_ARRAY)
         node.declare_parameter("allowed_object_ids", Parameter.Type.STRING_ARRAY)
         for name in ("asr_timeout", "parse_timeout"):
             value = node.get_parameter(name).value
             if not 0 < value <= 300:
                 raise ValueError(f"参数 {name} 必须大于 0 且不超过 300 秒")
+        self.dialogues = DialogueStore(
+            timeout=node.get_parameter("clarification_timeout").value
+        )
         # 模型调用只保留在 AI 端；接口端不依赖这些客户端。
         self.asr = node.create_client(RecognizeAudio, "/ai/recognize_audio")
         self.parser = ActionClient(node, ParseTask, "/ai/parse_task")
@@ -190,20 +208,11 @@ class AudioPipeline:
         elif stage == "asr_result" and job["future"].done():
             self.accept_asr(job["future"].result().result)
         elif stage == "parse_wait" and self.parser.server_is_ready():
-            goal = ParseTask.Goal()
-            msg = job["msg"]
-            goal.stamp = self.node.get_clock().now().to_msg()
-            goal.request_id = msg.request_id
-            goal.session_id = msg.session_id
-            goal.input_id = "audio:" + msg.segment_id
-            goal.input_context_id = msg.input_context_id
-            goal.text = job["text"]
-            goal.allowed_station_ids = (
-                self.node.get_parameter_or("allowed_station_ids").value or []
-            )
-            goal.allowed_object_ids = (
-                self.node.get_parameter_or("allowed_object_ids").value or []
-            )
+            try:
+                goal = self.build_parse_goal(job)
+            except SemanticError as exc:
+                self.fail(exc.code, str(exc))
+                return
             job["future"] = self.parser.send_goal_async(goal)
             self.stage("parse_goal", 3.0)
         elif stage == "parse_goal" and job["future"].done():
@@ -219,6 +228,79 @@ class AudioPipeline:
             self.stage("parse_result", self.node.get_parameter("parse_timeout").value)
         elif stage == "parse_result" and job["future"].done():
             self.accept_parse(job["future"].result())
+
+    @staticmethod
+    def dialogue_key(job):
+        msg = job["msg"]
+        return msg.session_id, msg.input_context_id
+
+    def build_parse_goal(self, job):
+        """将同一上下文的待澄清候选和追问带入下一次模型调用。"""
+        goal = ParseTask.Goal()
+        msg = job["msg"]
+        goal.stamp = self.node.get_clock().now().to_msg()
+        goal.request_id, goal.session_id = msg.request_id, msg.session_id
+        goal.input_id = "audio:" + msg.segment_id
+        goal.input_context_id, goal.text = msg.input_context_id, job["text"]
+        goal.allowed_station_ids = (
+            self.node.get_parameter_or("allowed_station_ids").value or []
+        )
+        goal.allowed_object_ids = (
+            self.node.get_parameter_or("allowed_object_ids").value or []
+        )
+        captured = msg.capture_started_at.sec * 10**9 + msg.capture_started_at.nanosec
+        pending = self.dialogues.get(
+            self.dialogue_key(job),
+            captured,
+            goal.allowed_station_ids,
+            goal.allowed_object_ids,
+        )
+        job["dialogue"] = pending
+        if pending is not None:
+            goal.partial_candidate.stamp = goal.stamp
+            types = {"NAVIGATE": 1, "TRANSPORT": 2}
+            for field, value in pending.candidate.items():
+                setattr(
+                    goal.partial_candidate,
+                    field,
+                    types[value] if field == "task_type" else value,
+                )
+            turns = []
+            for entry in pending.context:
+                turn = DialogueTurn()
+                turn.stamp = goal.stamp
+                turn.role = turn.USER if entry["role"] == "user" else turn.ASSISTANT
+                turn.text = entry["text"]
+                turns.append(turn)
+            goal.context = turns
+            self.node.get_logger().info(
+                f"请求 {msg.request_id}：继续澄清；会话={msg.session_id}；"
+                f"上下文={msg.input_context_id}；待补充={list(pending.missing_fields)}；"
+                f"保留候选={pending.candidate}"
+            )
+        else:
+            self.node.get_logger().info(f"请求 {msg.request_id}：开始新的任务理解")
+        return goal
+
+    def finish_dialogue_command(self, command):
+        """本地清空待补充任务；这些控制词不交给模型生成运动候选。"""
+        job = self.active
+        result = ParseTask.Result()
+        msg = job["msg"]
+        result.stamp = self.node.get_clock().now().to_msg()
+        result.request_id, result.session_id = msg.request_id, msg.session_id
+        result.input_id = "audio:" + msg.segment_id
+        result.input_context_id = msg.input_context_id
+        result.outcome, result.error_code = result.CANCELED, "CANCELED"
+        result.message = (
+            "已清空待补充信息，请重新描述完整任务"
+            if command == "reset"
+            else "已取消当前待补充任务"
+        )
+        job["stage"] = "parse_local"
+        self.accept_parse(
+            SimpleNamespace(status=GoalStatus.STATUS_CANCELED, result=result)
+        )
 
     def accept_asr(self, result):
         """先独立校验 ASR 结果，再保存文字并进入语义阶段。"""
@@ -245,6 +327,10 @@ class AudioPipeline:
             )
             self.active = None
             return
+        command = dialogue_command(result.text)
+        if command:
+            self.finish_dialogue_command(command)
+            return
         self.stage("parse_wait", 3.0)
 
     def accept_parse(self, wrapped):
@@ -258,6 +344,11 @@ class AudioPipeline:
             self.fail(exc.code, str(exc))
             return
         result = wrapped.result
+        try:
+            self.update_dialogue(job, result, stations, objects)
+        except SemanticError as exc:
+            self.fail(exc.code, str(exc))
+            return
         path = save_parse_result(job["path"], result)
         self.visualization.parse_result(result)
         state = (
@@ -278,9 +369,48 @@ class AudioPipeline:
         )
         self.active = None
 
+    def update_dialogue(self, job, result, stations, objects):
+        """只有校验通过的缺参结果才进入会话缓存；完整候选不自动执行。"""
+        key = self.dialogue_key(job)
+        previous = job.get("dialogue")
+        if result.outcome in (result.READY, result.NEED_CLARIFICATION):
+            candidate = candidate_payload(result.candidate)
+            if previous is not None:
+                merged = reconcile_candidate(candidate, previous.candidate)
+                if merged != candidate:
+                    raise SemanticError(
+                        "DIALOGUE_CONTEXT_LOST", "解析结果遗漏了已有信息，请重新回答追问"
+                    )
+            answer = validate_candidate(candidate, stations, objects)
+            if result.outcome == result.NEED_CLARIFICATION:
+                self.dialogues.remember(
+                    key,
+                    job["text"],
+                    answer,
+                    self.node.get_clock().now().nanoseconds,
+                    previous,
+                )
+                self.node.get_logger().info(
+                    f"请求 {result.request_id}：已保存待补充候选；"
+                    f"待补充={list(answer.missing_fields)}；"
+                    f"追问={answer.clarification_question}；"
+                    f"请在 {self.dialogues.timeout:.0f} 秒内再次录音回答"
+                )
+            else:
+                self.dialogues.forget(key)
+                self.node.get_logger().info(
+                    f"请求 {result.request_id}：候选字段完整且白名单校验通过；"
+                    "等待任务准备与用户明确确认，本流程不提交执行"
+                )
+        elif result.outcome == result.CANCELED:
+            self.dialogues.forget(key)
+        elif previous is not None:
+            result.message += "；上一轮待补充任务仍保留，可继续回答或说“重新开始”"
+
     def close(self):
         """停止本地调度，并尝试取消尚在进行的语义解析。"""
         self.timer.cancel()
+        self.dialogues.clear()
         if not self.node.context.ok():
             self.queue.clear()
             return

@@ -177,6 +177,9 @@ class DashboardWindow(QMainWindow):
         self.candidate_text.setReadOnly(True)
         self.candidate_text.setMinimumHeight(140)
         results.body.addWidget(self.candidate_text)
+        self.dialogue_hint = label("", "section", True)
+        self.dialogue_hint.hide()
+        results.body.addWidget(self.dialogue_hint)
         self.result_message = label("", "muted", True)
         results.body.addWidget(self.result_message)
         self.file_label = label(f"音频目录：{self.config.audio_root}", "muted", True)
@@ -375,6 +378,8 @@ class DashboardWindow(QMainWindow):
             ):
                 if candidate.get(key):
                     lines.append(f"{name}：{candidate[key]}")
+                elif key in parsed.get("missing_fields", []):
+                    lines.append(f"{name}：待补充")
             lines.append(
                 "需要返回：" + ("是" if candidate.get("return_required") else "否")
             )
@@ -384,6 +389,16 @@ class DashboardWindow(QMainWindow):
 
     def _show_result_details(self, state, parsed):
         """合并阶段说明、缺失字段、错误码及当前记录的音频路径。"""
+        question = parsed.get("clarification_question", "")
+        if parsed.get("outcome") == 1 and question:
+            self.dialogue_hint.setText(
+                f"{question}\n请再次录音回答；更换任务请先说“重新开始”。"
+            )
+        elif parsed.get("outcome") == 0 and parsed.get("success"):
+            self.dialogue_hint.setText("任务信息已完整，等待准备与明确确认；尚未执行。")
+        else:
+            self.dialogue_hint.clear()
+        self.dialogue_hint.setVisible(bool(self.dialogue_hint.text()))
         messages = [state.get("message", ""), parsed.get("message", "")]
         if parsed.get("missing_fields"):
             messages.append("待补充：" + "、".join(parsed["missing_fields"]))
