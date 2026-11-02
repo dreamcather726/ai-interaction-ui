@@ -6,14 +6,14 @@ from rclpy.action import ActionClient
 from rclpy.clock import Clock, ClockType
 from rclpy.parameter import Parameter
 
-from ai_edge.audio_job_queue import AudioJobQueue
-from ai_edge.audio_result_store import save_asr_text, save_parse_result
-from ai_edge.audio_result_validation import (
+from ai_edge.audio.audio_job_queue import AudioJobQueue
+from ai_edge.audio.audio_result_store import save_asr_text, save_parse_result
+from ai_edge.audio.audio_result_validation import (
     ResultValidationError,
     validate_asr_result,
     validate_parse_result,
 )
-from ai_edge.audio_visualization import AudioVisualization
+from ai_edge.visualization.audio_visualization import AudioVisualization
 from robot_interfaces.action import ParseTask
 from robot_interfaces.msg import AudioProcessingState, RecognizedText, RequestStatus
 from robot_interfaces.srv import RecognizeAudio

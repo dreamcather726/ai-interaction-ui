@@ -19,8 +19,8 @@ setup(
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
-            'audio_receiver_node = ai_interface.audio_receiver_node:main',
-            'microphone_sender_node = ai_interface.microphone_sender_node:main',
+            'audio_receiver_node = ai_interface.audio.audio_receiver_node:main',
+            'microphone_sender_node = ai_interface.devices.microphone_sender_node:main',
         ],
     },
 )

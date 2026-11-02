@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from ai_edge.audio_input import read_audio_handoff
+from ai_edge.audio.audio_input import read_audio_handoff
 
 
 def read_asr_request(request, audio_root):

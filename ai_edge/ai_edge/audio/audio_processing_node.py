@@ -6,8 +6,8 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 
-from ai_edge.audio_input import read_audio_handoff
-from ai_edge.audio_pipeline import AudioPipeline
+from ai_edge.audio.audio_input import read_audio_handoff
+from ai_edge.audio.audio_pipeline import AudioPipeline
 from robot_interfaces.msg import RequestStatus
 from robot_interfaces.srv import ProcessAudio
 

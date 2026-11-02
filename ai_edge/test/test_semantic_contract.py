@@ -2,8 +2,8 @@
 
 import unittest
 
-from ai_edge.ollama_backend import OllamaBackend
-from ai_edge.semantic_contract import SemanticError, validate_candidate
+from ai_edge.semantic.ollama_backend import OllamaBackend
+from ai_edge.semantic.semantic_contract import SemanticError, validate_candidate
 
 
 class SemanticContractTests(unittest.TestCase):

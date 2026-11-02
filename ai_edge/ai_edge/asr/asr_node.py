@@ -11,9 +11,9 @@ from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.task import Future
 
-from ai_edge.asr_audio import read_asr_request
-from ai_edge.asr_health import ASRHealth
-from ai_edge.funasr_backend import ASRError, FunASRBackend
+from ai_edge.asr.asr_audio import read_asr_request
+from ai_edge.asr.asr_health import ASRHealth
+from ai_edge.asr.funasr_backend import ASRError, FunASRBackend
 from robot_interfaces.msg import RecognizedText
 from robot_interfaces.srv import RecognizeAudio
 

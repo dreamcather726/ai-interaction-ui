@@ -16,6 +16,53 @@ ROS 2 Humble AI 交互项目。程序与模型部署在 PC 的 Linux 虚拟机�
 
 详见[接口协议](docs/接口协议.md)。仓库使用英文名称 `ai-interaction-ui`，中文项目名称为“ai交互界面”。
 
+### 源码目录导航
+
+业务代码按职责放入 Python 子包，四个 ROS 功能包仍放在工作空间的 src 下：
+
+```text
+src/
+├── ai_edge/
+│   ├── ai_edge/
+│   │   ├── audio/          # 音频输入、队列、流程调度、结果校验与存储
+│   │   ├── asr/            # FunASR 模型、识别节点、输入适配与健康状态
+│   │   ├── semantic/       # Ollama 模型、语义 Action、提示词与候选校验
+│   │   └── visualization/  # 处理状态、结果广播与查询接口
+│   ├── test/               # 规则与响应校验测试
+│   ├── resource/           # ROS 包索引标记
+│   ├── package.xml
+│   └── setup.py
+├── ai_interface/
+│   ├── ai_interface/
+│   │   ├── audio/          # PC 端音频接收、WAV 保存与任务转交
+│   │   └── devices/        # 香橙派／WSL 真实麦克风发送程序
+│   ├── resource/
+│   ├── package.xml
+│   └── setup.py
+├── robot_interfaces/       # 公共 msg、srv、action 定义
+├── robot_visualization/    # 可视化业务包骨架
+├── docs/                   # 协议与可视化对接说明
+└── README.md
+```
+
+`resource/ai_edge` 是 ROS 功能包发现所需的标记文件，保留为空即可；业务代码放在上面的 Python 子包中。各子包包含 `__init__.py`，由 setup.py 的 find_packages 自动安装。
+
+目录调整后重新构建并加载工作空间。`ros2 run` 的包名及可执行名称保持原样，Python 模块启动和脚本直接启动改用新路径：
+
+```bash
+cd ~/ai_interaction_ws
+source /opt/ros/humble/setup.bash
+colcon build --packages-up-to ai_interface ai_edge --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
+source install/setup.bash
+
+# 在已激活 FunASR 环境的终端启动 ASR；参数沿用下文配置
+python -m ai_edge.asr.asr_node
+# 设备侧程序可以直接通过 Python 启动
+python3 src/ai_interface/ai_interface/devices/microphone_sender_node.py
+```
+
+2026-11-02 目录整理验收：20 个迁移模块的业务 AST 保持一致；WSL Humble 临时工作空间 `/tmp/ai-layout-wYjgzT` 中三个包构建、全部子包导入、五个既有可执行入口和 16 项规则测试通过。使用已有真实录音验证了接口接收保存→AI 交接→真实 FunASR→千问 2B→文件、广播和查询，Action 的澄清、取消、忙碌拒绝、超时及错误恢复也通过；本次未采集新的硬件录音。
+
 在已安装 ROS 2 Humble 的 Linux 虚拟机中，从工作空间根目录执行：
 
 ```bash
@@ -41,7 +88,7 @@ ros2 service call /audio/stop_recording std_srvs/srv/Trigger "{}"
 
 历史版本曾验证控制转发和三秒超时；当前简化版接收节点已移除此转发功能。真实香橙派录音控制尚待联调。
 
-`ai_interface/ai_interface/audio_receiver_node.py` 接收香橙派发布的 `/audio/segments`（`robot_interfaces/msg/AudioSegment`），校验后保存 WAV，并向 `/ai/request_status` 发布带原 request_id 的接收结果；随后由 `audio_forwarder.py` 将完整来源信息和 WAV 绝对路径提交给 ai_edge。
+`ai_interface/ai_interface/audio/audio_receiver_node.py` 接收香橙派发布的 `/audio/segments`（`robot_interfaces/msg/AudioSegment`），校验后保存 WAV，并向 `/ai/request_status` 发布带原 request_id 的接收结果；随后由 `audio_forwarder.py` 将完整来源信息和 WAV 绝对路径提交给 ai_edge。
 
 在 Linux 工作空间根目录执行：
 
@@ -85,7 +132,7 @@ source install/setup.bash
 # 终端一
 ros2 run ai_interface audio_receiver_node
 # 终端二
-python3 src/ai_interface/ai_interface/microphone_sender_node.py
+python3 src/ai_interface/ai_interface/devices/microphone_sender_node.py
 ```
 
 终端三开始录音，说完后停止并发送：
@@ -99,7 +146,7 @@ ros2 service call /audio/stop_recording std_srvs/srv/Trigger "{}"
 
 ```bash
 pactl list short sources
-python3 src/ai_interface/ai_interface/microphone_sender_node.py --ros-args -p device:=RDPSource
+python3 src/ai_interface/ai_interface/devices/microphone_sender_node.py --ros-args -p device:=RDPSource
 ```
 
 开始回执成功只表示 parecord 进程已启动，设备初始化失败由节点日志报告。停止回执成功表示真实音频已发布；接收落盘仍查看 `/ai/request_status`。采集最多 10 秒／320000 字节，后台持续读取管道，达到上限自动停止并发送。停止总会终止采集：没有接收者或无音频时返回失败并丢弃，不伪造结果；重复停止不重发，节点退出会停止采集并丢弃未发送数据。尚未使用会话管理时默认生成 mic-session／mic-context 标识，仅用于独立录音链路测试；接入任务系统后用 session_id、input_context_id 参数传入当前有效上下文。
@@ -165,17 +212,17 @@ RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来�
 
 | 文件 | 单一职责 |
 |---|---|
-| ai_interface/audio_receiver_node.py | ROS 音频订阅、接收回执与调用转交组件 |
-| ai_interface/audio_storage.py | PCM 传输校验、带北京时间的 WAV 保存 |
-| ai_interface/audio_forwarder.py | 打包来源数据、异步提交 AI 受理服务 |
-| ai_edge/audio_processing_node.py | AI 端 ProcessAudio 服务入口与组件装配 |
-| ai_edge/audio_input.py | 共享文件路径、WAV 内容和来源元数据校验 |
-| ai_edge/audio_job_queue.py | 有界任务队列、指纹计算与进程内去重 |
-| ai_edge/audio_pipeline.py | ASR→语义阶段调度、ROS 客户端和超时控制 |
-| ai_edge/audio_result_validation.py | ASR／语义响应、任务候选及白名单校验 |
-| ai_edge/audio_result_store.py | 实际识别文本和解析 JSON 的持久化 |
+| ai_interface/audio/audio_receiver_node.py | ROS 音频订阅、接收回执与调用转交组件 |
+| ai_interface/audio/audio_storage.py | PCM 传输校验、带北京时间的 WAV 保存 |
+| ai_interface/audio/audio_forwarder.py | 打包来源数据、异步提交 AI 受理服务 |
+| ai_edge/audio/audio_processing_node.py | AI 端 ProcessAudio 服务入口与组件装配 |
+| ai_edge/audio/audio_input.py | 共享文件路径、WAV 内容和来源元数据校验 |
+| ai_edge/audio/audio_job_queue.py | 有界任务队列、指纹计算与进程内去重 |
+| ai_edge/audio/audio_pipeline.py | ASR→语义阶段调度、ROS 客户端和超时控制 |
+| ai_edge/audio/audio_result_validation.py | ASR／语义响应、任务候选及白名单校验 |
+| ai_edge/audio/audio_result_store.py | 实际识别文本和解析 JSON 的持久化 |
 
-表中路径相对于各功能包根目录（例如 ai_edge/audio_pipeline.py 的仓库位置为 ai_edge/ai_edge/audio_pipeline.py）。节点与流程层调用辅助模块，辅助模块不反向导入节点或调度器；存储、队列和校验函数不创建 ROS 节点或客户端。状态发布通过显式传入的回调交给编排器，不再要求编排器访问外层节点的 receipt_pub 属性。
+表中路径相对于各功能包根目录（例如 ai_edge/audio/audio_pipeline.py 的仓库位置为 ai_edge/ai_edge/audio/audio_pipeline.py）。节点与流程层调用辅助模块，辅助模块不反向导入节点或调度器；存储、队列和校验函数不创建 ROS 节点或客户端。状态发布通过显式传入的回调交给编排器，不再要求编排器访问外层节点的 receipt_pub 属性。
 
 本次仅重构职责边界，现有 Topic／Service／Action、参数和 ros2 run 入口不变。2026-11-01 已在 WSL Humble 构建两个业务包并重跑完整通信契约回归，保存／转交／ASR／语义、失败、静音、去重、白名单、超时恢复均通过。仍未运行真实模型推理。
 
@@ -189,7 +236,7 @@ RecognizeAudio.Response.result 使用完整 RecognizedText。AI 编排校验来�
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
-python3 src/ai_interface/ai_interface/microphone_sender_node.py
+python3 src/ai_interface/ai_interface/devices/microphone_sender_node.py
 ```
 
 它仍是 ROS 2 节点，仍需已构建的 robot_interfaces；只是无需通过 ros2 run 启动。原 ros2 run 入口也保留兼容。
@@ -203,11 +250,11 @@ python3 src/ai_interface/ai_interface/microphone_sender_node.py
 
 | 文件 | 职责 |
 |---|---|
-| ai_edge/ai_edge/funasr_backend.py | 加载一次 FunASR 模型、真实 PCM 推理与文本标签清理 |
-| ai_edge/ai_edge/asr_audio.py | ASR 请求到已有共享目录／WAV 校验的适配 |
-| ai_edge/ai_edge/asr_node.py | /ai/recognize_audio 服务、后台加载与单任务推理、超时／并发处理 |
-| ai_edge/ai_edge/asr_health.py | ASR 就绪／忙碌／故障状态与节点心跳 |
-| ai_edge/ai_edge/audio_visualization.py | 音频阶段、语义结果广播及晚加入查询 |
+| ai_edge/ai_edge/asr/funasr_backend.py | 加载一次 FunASR 模型、真实 PCM 推理与文本标签清理 |
+| ai_edge/ai_edge/asr/asr_audio.py | ASR 请求到已有共享目录／WAV 校验的适配 |
+| ai_edge/ai_edge/asr/asr_node.py | /ai/recognize_audio 服务、后台加载与单任务推理、超时／并发处理 |
+| ai_edge/ai_edge/asr/asr_health.py | ASR 就绪／忙碌／故障状态与节点心跳 |
+| ai_edge/ai_edge/visualization/audio_visualization.py | 音频阶段、语义结果广播及晚加入查询 |
 
 先在 WSL 更新并重建全部接口使用方（无需重新安装已可用的 FunASR 环境）：
 
@@ -227,7 +274,7 @@ cd ~/ai_interaction_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 source ~/venvs/ros2_audio/bin/activate
-python -m ai_edge.asr_node --ros-args \
+python -m ai_edge.asr.asr_node --ros-args \
   -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
   -p model_path:=/home/tao/.cache/modelscope/models/iic--SenseVoiceSmall/snapshots/master \
   -p device:=cpu
@@ -305,11 +352,11 @@ ros2 action send_goal /ai/parse_task robot_interfaces/action/ParseTask \
 
 | 模块 | 职责 |
 |---|---|
-| `semantic_prompt.py` | 任务抽取提示词与少量示例 |
-| `ollama_backend.py` | 调用本地 `/api/chat`，默认关闭 thinking、要求 JSON schema |
-| `semantic_contract.py` | 独立检查类型、工位／物料白名单、互斥字段、缺参 |
-| `semantic_input.py` | Goal 来源、历史、部分候选及输入总量校验 |
-| `parse_task_node.py` | ROS Action、反馈、并发拒绝、取消与超时 |
+| `ai_edge/ai_edge/semantic/semantic_prompt.py` | 任务抽取提示词与少量示例 |
+| `ai_edge/ai_edge/semantic/ollama_backend.py` | 调用本地 `/api/chat`，默认关闭 thinking、要求 JSON schema |
+| `ai_edge/ai_edge/semantic/semantic_contract.py` | 独立检查类型、工位／物料白名单、互斥字段、缺参 |
+| `ai_edge/ai_edge/semantic/semantic_input.py` | Goal 来源、历史、部分候选及输入总量校验 |
+| `ai_edge/ai_edge/semantic/parse_task_node.py` | ROS Action、反馈、并发拒绝、取消与超时 |
 
 节点参数为 model（qwen3.5:2b）、ollama_url（http://127.0.0.1:11434）、request_timeout（90.0 秒，范围 (0,290]）。冷启动可能需要加载模型，编排侧 parse_timeout 推荐 120 秒，应大于服务端等待上限；原默认 30 秒保持兼容。单模型只处理一条请求，并发 Goal 被拒并广播 LLM_BUSY 回执。取消或超时后立即结束 ROS 等待，底层 HTTP 返回前保持忙碌并丢弃迟到内容，不自动重试。
 

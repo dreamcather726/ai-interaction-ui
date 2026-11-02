@@ -6,8 +6,8 @@ from pathlib import Path
 import rclpy
 from rclpy.node import Node
 
-from ai_interface.audio_forwarder import AudioForwarder
-from ai_interface.audio_storage import save_wav, validate_audio_segment
+from ai_interface.audio.audio_forwarder import AudioForwarder
+from ai_interface.audio.audio_storage import save_wav, validate_audio_segment
 from robot_interfaces.msg import AudioSegment, RequestStatus
 
 

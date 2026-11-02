@@ -10,9 +10,9 @@ from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.task import Future
 
-from ai_edge.ollama_backend import OllamaBackend
-from ai_edge.semantic_contract import SemanticError
-from ai_edge.semantic_input import read_parse_goal
+from ai_edge.semantic.ollama_backend import OllamaBackend
+from ai_edge.semantic.semantic_contract import SemanticError
+from ai_edge.semantic.semantic_input import read_parse_goal
 from robot_interfaces.action import ParseTask
 from robot_interfaces.msg import RequestStatus
 

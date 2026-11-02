@@ -1,6 +1,10 @@
 """把 ROS Goal 转换为受限的纯 Python 输入，不调用模型。"""
 
-from ai_edge.semantic_contract import ID_FIELDS, SemanticError, validate_candidate
+from ai_edge.semantic.semantic_contract import (
+    ID_FIELDS,
+    SemanticError,
+    validate_candidate,
+)
 
 
 def read_parse_goal(goal):

@@ -6,8 +6,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
-from ai_edge.semantic_contract import SCHEMA, SemanticError, validate_candidate
-from ai_edge.semantic_prompt import build_messages
+from ai_edge.semantic.semantic_contract import SCHEMA, SemanticError, validate_candidate
+from ai_edge.semantic.semantic_prompt import build_messages
 
 
 class OllamaBackend:
