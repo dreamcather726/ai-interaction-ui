@@ -25,14 +25,17 @@ cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 colcon build --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
-~/venvs/ros2_audio/bin/python -m pip install -r src/robot_visualization/requirements.txt
+/usr/bin/python3 -m pip install --user -r src/robot_visualization/requirements.txt
 ```
 
 以后加载 ROS 和工作空间环境后，一个命令启动界面及全部现有语音功能：
 
 ```bash
-ros2 run --prefix "$HOME/venvs/ros2_audio/bin/python" robot_visualization dashboard
+ros2 run --prefix /usr/bin/python3 robot_visualization dashboard --ros-args \
+  -p asr_python:=/usr/bin/python3
 ```
+
+GUI 依赖固定为 PySide6 6.8.3，直接安装到系统 Python 的用户目录，无需虚拟环境。已安装 6.12.0 且出现 `none_dealloc` 崩溃时，先按[工作台使用说明](docs/前端工作台_使用说明.md#pyside6-依赖替换与崩溃排查)替换依赖。
 
 窗口提供真实录音开始／停止、ASR 文字、语义候选、处理阶段、历史查询和运行日志。麦克风最长十秒自动停止。地图、相机、底盘和电池尚未接入，因此不添加对应区域。下文保留分节点调试命令；一键启动时无需另外手动打开这些节点。
 

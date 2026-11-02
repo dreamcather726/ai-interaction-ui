@@ -11,7 +11,7 @@ setup(
         ("share/" + package_name, ["package.xml"]),
     ],
     install_requires=["setuptools"],
-    extras_require={"gui": ["PySide6>=6.6,<7"]},
+    extras_require={"gui": ["PySide6==6.8.3"]},
     zip_safe=True,
     maintainer="tao",
     maintainer_email="tao@todo.todo",

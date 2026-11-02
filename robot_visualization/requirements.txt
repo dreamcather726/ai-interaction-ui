@@ -1,1 +1,2 @@
-PySide6>=6.6,<7
+# Keep the GUI runtime consistent on ROS 2 Humble / Python 3.10.
+PySide6==6.8.3
