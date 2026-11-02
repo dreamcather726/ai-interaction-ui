@@ -21,7 +21,7 @@ ROS 2 Humble AI 交互项目。程序与模型部署在 PC 的 Linux 虚拟机�
 先构建所有包、加载工作空间，再安装一次 PySide6：
 
 ```bash
-cd ~/ai_interaction_ws
+cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 colcon build --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
@@ -72,7 +72,7 @@ src/
 目录调整后重新构建并加载工作空间，所有节点统一使用 `ros2 run` 启动：
 
 ```bash
-cd ~/ai_interaction_ws
+cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 colcon build --packages-up-to ai_interface ai_edge --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
@@ -131,6 +131,8 @@ ros2 topic echo /ai/request_status robot_interfaces/msg/RequestStatus
 
 文件名格式为 `audio_年月日_时分秒_微秒_UUID.wav`，例如 `audio_20261101_193000_123456_唯一标识.wav`。日期时间使用接收保存时的北京时间（UTC+8），不受 WSL 系统时区影响；UUID 避免重名。日志和回执包含 request_id 与实际路径。相对 output_dir 以启动目录解析。operation=/audio/segments 的成功仅表示音频已保存，ASR 和解析分别按各自 operation 回报。音频校验／保存失败返回 AUDIO_RECEIVE_FAILED。录音、识别文本和解析结果是运行数据，不应作为源码提交。
 
+工作台、接收节点、AI 编排和 ASR 默认均使用相对目录 `received_audio`。从工作空间根目录启动时，该目录与 `src`、`build`、`install`、`log` 同级；WAV、同名 TXT 和 `.parse.json` 保存在一起。代码中的绝对路径只用于进程间文件交接，不再写死用户目录。各终端应从相同的工作空间根目录启动，或显式配置相同的音频目录。
+
 2026-11-01 已在 WSL Ubuntu-22.04 / Humble 构建通过，并用本地 ROS 发布／订阅验证 1 秒合成 PCM 的 WAV 保存、关联回执、错误格式拒绝及错误后的继续接收；临时测试音频已清理。尚未验证香橙派跨设备 DDS 网络或真实麦克风音频。
 
 ### 使用 WSL 的真实麦克风
@@ -140,9 +142,9 @@ ros2 topic echo /ai/request_status robot_interfaces/msg/RequestStatus
 先更新并在 WSL 工作空间构建（沿用普通安装方式）：
 
 ```bash
-cd ~/ai_interaction_ws/src
+cd ~/ai-interaction-ui/src
 git pull --ff-only origin main
-cd ~/ai_interaction_ws
+cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 colcon build --packages-up-to ai_interface --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
@@ -197,7 +199,7 @@ Response.receipt 复用 RequestStatus，仅表示 AI 接受／拒绝任务，不
 重新构建接口、接口包和 AI 包：
 
 ```bash
-cd ~/ai_interaction_ws
+cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 colcon build --packages-up-to ai_interface ai_edge --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
@@ -208,11 +210,11 @@ source install/setup.bash
 ```bash
 # 接口端：只负责保存和转交
 ros2 run ai_interface audio_receiver_node --ros-args \
-  -p output_dir:=/home/tao/ai_interaction_ws/received_audio
+  -p output_dir:=received_audio
 
 # AI 端：接收任务并调度识别、语义处理
 ros2 run ai_edge audio_processing_node --ros-args \
-  -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
+  -p audio_root:=received_audio \
   -p allowed_station_ids:="[station_a, station_b]" \
   -p allowed_object_ids:="[box_1]"
 ```
@@ -281,9 +283,9 @@ ros2 run ai_interface microphone_sender_node
 先在 WSL 更新并重建全部接口使用方（无需重新安装已可用的 FunASR 环境）：
 
 ```bash
-cd ~/ai_interaction_ws/src
+cd ~/ai-interaction-ui/src
 git pull --ff-only origin main
-cd ~/ai_interaction_ws
+cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 colcon build --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
@@ -292,11 +294,11 @@ source install/setup.bash
 终端一启动 ASR。先按 [本地模型说明](models/README.md) 准备完整模型；下面假设仓库位于工作空间的 `src`，并使用已安装 FunASR 的系统 Python：
 
 ```bash
-cd ~/ai_interaction_ws
+cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run --prefix /usr/bin/python3 ai_edge asr_node --ros-args \
-  -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
+  -p audio_root:=received_audio \
   -p model_path:="$PWD/src/models/SenseVoiceSmall" \
   -p device:=cpu
 ```
@@ -308,11 +310,11 @@ ros2 run --prefix /usr/bin/python3 ai_edge asr_node --ros-args \
 终端二启动 AI 编排。只验收 ASR 时关闭语义步骤；完整语义链路见下一节：
 
 ```bash
-cd ~/ai_interaction_ws
+cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run ai_edge audio_processing_node --ros-args \
-  -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
+  -p audio_root:=received_audio \
   -p enable_semantic:=false
 ```
 
@@ -344,7 +346,7 @@ ollama serve
 保留上节的 ASR 节点，另开终端启动语义节点：
 
 ```bash
-cd ~/ai_interaction_ws
+cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run ai_edge parse_task_node --ros-args -p model:=qwen3.5:2b
@@ -354,7 +356,7 @@ ros2 run ai_edge parse_task_node --ros-args -p model:=qwen3.5:2b
 
 ```bash
 ros2 run ai_edge audio_processing_node --ros-args \
-  -p audio_root:=/home/tao/ai_interaction_ws/received_audio \
+  -p audio_root:=received_audio \
   -p enable_semantic:=true \
   -p parse_timeout:=120.0 \
   -p allowed_station_ids:="[station_a, station_b]" \

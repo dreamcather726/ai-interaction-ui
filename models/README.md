@@ -36,12 +36,13 @@ PY
 已有完整模型时，也可以将整个模型文件夹复制到上述位置，保留其配置、词表和权重。
 启动前确认 `models/SenseVoiceSmall/model.pt` 存在。
 
+从包含 `src`、`install` 的工作空间根目录启动节点，模型目录由默认路径配置定位：
+
 ```bash
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 run --prefix /usr/bin/python3 ai_edge asr_node --ros-args \
-  -p model_path:="$PWD/models/SenseVoiceSmall" \
-  -p audio_root:="$HOME/ai_interaction_ws/received_audio"
+  -p audio_root:=received_audio
 ```
 
 工作台直接使用同一默认目录；需要自定义存放位置时，用 `-p model_path:=绝对路径` 覆盖。

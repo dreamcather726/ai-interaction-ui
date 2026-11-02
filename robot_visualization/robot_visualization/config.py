@@ -27,7 +27,9 @@ class DashboardConfig:
         model = default_model_path()
         python = Path.home() / "venvs/ros2_audio/bin/python"
         defaults = {
-            "audio_root": str(Path.home() / "ai_interaction_ws/received_audio"),
+            # 从工作空间根目录启动时，与 src/build/install/log 同级。
+            # 与独立节点的默认值一致；下方仅为跨进程文件交接解析绝对路径。
+            "audio_root": "received_audio",
             "model_path": str(model),
             "asr_python": str(python) if python.is_file() else sys.executable,
             "model": "qwen3.5:2b",
