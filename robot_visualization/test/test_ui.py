@@ -138,8 +138,8 @@ class WindowTests(unittest.TestCase):
         panel.new()
         for _ in range(40):
             panel.add_blank("NAVIGATE")
-        panel.table.item(0, 4).setText("station_a")
-        panel.table.item(1, 4).setText("station_b")
+        panel.table.item(0, 2).setText("station_a")
+        panel.table.item(1, 2).setText("station_b")
         self.assertEqual(panel.table.rowCount(), 40)
         panel.table.selectRow(1)
         panel.move_step(-1)
@@ -147,6 +147,53 @@ class WindowTests(unittest.TestCase):
         panel.remove_step()
         self.assertEqual(panel.table.rowCount(), 39)
         self.assertFalse(panel.buttons["confirm"].isEnabled())
+
+    def test_manual_actions_only_inherit_explicit_plan_parameters(self):
+        panel = self.window.draft_panel
+        panel.new()
+        panel.add_blank("NAVIGATE")
+        panel.table.item(0, 2).setText("station_a")
+        panel.add_blank("PICK")
+        self.assertEqual(panel.table.item(1, 2).text(), "station_a")
+        self.assertEqual(panel.table.item(1, 1).text(), "")
+        panel.table.item(1, 1).setText("box_1")
+        panel.add_blank("NAVIGATE")
+        panel.table.item(2, 2).setText("station_b")
+        panel.add_blank("PLACE")
+        self.assertEqual(panel.table.item(3, 2).text(), "station_b")
+        self.assertEqual(panel.table.item(3, 1).text(), "box_1")
+
+    def test_transport_candidate_is_added_as_four_editable_actions(self):
+        panel = self.window.draft_panel
+        panel.new()
+        panel.set_candidate(
+            dict(
+                request_id="audio-transport",
+                session_id="session",
+                input_context_id="context",
+                success=True,
+                outcome=0,
+                candidate=dict(
+                    task_type=2,
+                    object_id="box_1",
+                    pickup_station_id="station_a",
+                    dropoff_station_id="station_b",
+                    return_required=False,
+                ),
+            )
+        )
+        panel.add_candidate()
+        self.assertEqual(panel.table.rowCount(), 4)
+        self.assertEqual(
+            [panel.table.cellWidget(row, 0).currentData() for row in range(4)],
+            ["NAVIGATE", "PICK", "NAVIGATE", "PLACE"],
+        )
+        self.assertEqual(
+            [panel.table.item(row, 2).text() for row in range(4)],
+            ["station_a", "station_a", "station_b", "station_b"],
+        )
+        panel.add_candidate()
+        self.assertEqual(panel.table.rowCount(), 4)
 
     def test_editing_saved_draft_disables_confirmation(self):
         panel = self.window.draft_panel
@@ -162,11 +209,14 @@ class WindowTests(unittest.TestCase):
             source_request_ids=["audio-one"],
             confirmation_token="token-one",
             summary="导航到 station_a",
-            candidate=dict(task_type=1, destination_station_id="station_a"),
+            candidate=dict(
+                task_type=3,
+                steps=[dict(task_type=1, destination_station_id="station_a")],
+            ),
         )
         panel.receive(dict(operation="save", success=True, draft=value))
         self.assertTrue(panel.buttons["confirm"].isEnabled())
-        panel.table.item(0, 4).setText("station_b")
+        panel.table.item(0, 2).setText("station_b")
         self.assertFalse(panel.buttons["confirm"].isEnabled())
         received = []
         panel.command_requested.connect(

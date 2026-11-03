@@ -52,7 +52,7 @@ class DraftTests(unittest.TestCase):
 
     def test_variable_length_draft_and_confirmation_are_persisted(self):
         draft = self.save()
-        self.assertEqual(len(plan_steps(draft["candidate"])), 40)
+        self.assertEqual(len(plan_steps(draft["candidate"])), 160)
         self.assertEqual(draft["revision"], 1)
         result = self.review(draft)
         self.assertEqual(result["state"], DraftStore.CONFIRMED)
@@ -97,7 +97,7 @@ class DraftTests(unittest.TestCase):
         self.store = DraftStore(self.path, ["station_a", "station_b"], ["box_1"])
         restored = self.store.query(draft["draft_id"])[0]
         self.assertEqual(restored["state"], DraftStore.EXPIRED)
-        self.assertEqual(len(restored["candidate"]["steps"]), 40)
+        self.assertEqual(len(restored["candidate"]["steps"]), 160)
         with self.assertRaises(DraftError):
             self.review(draft, request_id="after-restart")
 

@@ -25,7 +25,8 @@ from robot_visualization.ui.theme import STYLE
 from robot_visualization.ui.widgets import Badge, Card, PipelineStrip, glyph, label
 from robot_visualization.ui.task_drafts import TaskDraftPanel
 from robot_visualization.task_model import normalize_candidate
-from ai_edge.task_drafts.store import plan_steps, plan_summary
+from ai_edge.task_drafts.store import plan_summary
+from ai_edge.task_drafts.actions import action_steps
 
 
 class DashboardWindow(QMainWindow):
@@ -392,10 +393,18 @@ class DashboardWindow(QMainWindow):
                 "NAVIGATE": "导航",
                 "TRANSPORT": "搬运",
                 "SEQUENCE": "有序任务列表",
+                "PICK": "抓取",
+                "PLACE": "放下",
             }
+            try:
+                preview = action_steps(candidate)
+            except ValueError as exc:
+                self.candidate_text.setPlainText(f"动作展开失败：{exc}")
+                return
             self.candidate_text.setPlainText(
                 f"任务类型：{kinds.get(candidate['task_type'], '未知')}\n"
-                f"共 {len(plan_steps(candidate))} 步\n" + plan_summary(candidate)
+                f"动作预览，共 {len(preview)} 步\n"
+                + plan_summary({"task_type": "SEQUENCE", "steps": preview})
             )
         else:
             self.candidate_text.clear()

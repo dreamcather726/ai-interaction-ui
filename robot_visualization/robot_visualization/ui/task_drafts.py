@@ -5,9 +5,9 @@ from uuid import uuid4
 
 from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QPushButton,
     QPlainTextEdit,
@@ -20,9 +20,9 @@ from PySide6.QtWidgets import (
 from ai_edge.semantic.semantic_contract import (
     ID_FIELDS,
     empty_candidate,
-    validate_candidate,
 )
-from ai_edge.task_drafts.store import plan_steps, plan_summary
+from ai_edge.task_drafts.store import plan_summary
+from ai_edge.task_drafts.actions import action_steps, validate_action_plan
 from robot_visualization.task_model import normalize_candidate
 
 
@@ -58,9 +58,10 @@ class TaskDraftPanel(QWidget):
         self.info = QLabel("新建草稿后可逐条添加任务；每个步骤都需要核对。")
         self.info.setWordWrap(True)
         layout.addWidget(self.info)
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(
-            ["类型", "物料", "取货点", "放货点", "导航目标", "返回", "返回点"]
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(["动作", "物料", "目标／操作工位"])
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
         )
         self.table.setMinimumHeight(240)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -72,7 +73,8 @@ class TaskDraftPanel(QWidget):
             ("new", "新建草稿", self.new),
             ("add", "加入当前候选", self.add_candidate),
             ("navigate", "+ 导航", lambda: self.add_blank("NAVIGATE")),
-            ("transport", "+ 搬运", lambda: self.add_blank("TRANSPORT")),
+            ("pick", "+ 抓取", lambda: self.add_blank("PICK")),
+            ("place", "+ 放下", lambda: self.add_blank("PLACE")),
             ("remove", "删除步骤", self.remove_step),
             ("up", "上移", lambda: self.move_step(-1)),
             ("down", "下移", lambda: self.move_step(1)),
@@ -119,7 +121,7 @@ class TaskDraftPanel(QWidget):
         free = not self.pending
         self.table.setEnabled(free)
         self.history.setEnabled(free)
-        for key in ("new", "navigate", "transport", "remove", "up", "down"):
+        for key in ("new", "navigate", "pick", "place", "remove", "up", "down"):
             self.buttons[key].setEnabled(free)
         self.buttons["add"].setEnabled(free and self.candidate is not None)
         self.buttons["save"].setEnabled(
@@ -157,51 +159,45 @@ class TaskDraftPanel(QWidget):
         row = self.table.rowCount()
         self.table.insertRow(row)
         kind = QComboBox()
-        kind.addItem("导航", "NAVIGATE")
-        kind.addItem("搬运", "TRANSPORT")
-        kind.setCurrentIndex(1 if step["task_type"] == "TRANSPORT" else 0)
+        for title, value in (
+            ("导航到", "NAVIGATE"),
+            ("抓取", "PICK"),
+            ("放下", "PLACE"),
+        ):
+            kind.addItem(title, value)
+        kind.setCurrentIndex(kind.findData(step["task_type"]))
         kind.currentIndexChanged.connect(self.changed)
         self.table.setCellWidget(row, 0, kind)
-        for column, field in (
-            (1, "object_id"),
-            (2, "pickup_station_id"),
-            (3, "dropoff_station_id"),
-            (4, "destination_station_id"),
-            (6, "return_station_id"),
-        ):
-            self.table.setItem(row, column, QTableWidgetItem(step.get(field, "")))
-        back = QCheckBox()
-        back.setChecked(step.get("return_required", False))
-        back.toggled.connect(self.changed)
-        self.table.setCellWidget(row, 5, back)
+        self.table.setItem(row, 1, QTableWidgetItem(step["object_id"]))
+        field = {
+            "NAVIGATE": "destination_station_id",
+            "PICK": "pickup_station_id",
+            "PLACE": "dropoff_station_id",
+        }[step["task_type"]]
+        self.table.setItem(row, 2, QTableWidgetItem(step[field]))
 
     def steps(self):
         values = []
         for row in range(self.table.rowCount()):
             item = {field: "" for field in ID_FIELDS}
-            item["task_type"] = self.table.cellWidget(row, 0).currentData()
-            item["return_required"] = self.table.cellWidget(row, 5).isChecked()
-            for column, field in (
-                (1, "object_id"),
-                (2, "pickup_station_id"),
-                (3, "dropoff_station_id"),
-                (4, "destination_station_id"),
-                (6, "return_station_id"),
-            ):
-                cell = self.table.item(row, column)
-                item[field] = cell.text().strip() if cell else ""
+            kind = self.table.cellWidget(row, 0).currentData()
+            item.update(task_type=kind, return_required=False)
+            obj, station = self.table.item(row, 1), self.table.item(row, 2)
+            item["object_id"] = obj.text().strip() if obj else ""
+            field = {
+                "NAVIGATE": "destination_station_id",
+                "PICK": "pickup_station_id",
+                "PLACE": "dropoff_station_id",
+            }[kind]
+            item[field] = station.text().strip() if station else ""
             values.append(item)
         return values
 
     def plan(self):
         values = self.steps()
         if not values:
-            raise ValueError("请添加任务步骤")
-        return (
-            dict(values[0], steps=[])
-            if len(values) == 1
-            else empty_candidate("SEQUENCE", values)
-        )
+            raise ValueError("请添加动作")
+        return empty_candidate("SEQUENCE", values)
 
     def load_steps(self, values):
         self.loading = True
@@ -230,7 +226,28 @@ class TaskDraftPanel(QWidget):
             return
         step = empty_candidate(kind)
         step.pop("steps")
-        self.load_steps([*self.steps(), step])
+        values = self.steps()
+        if kind in ("PICK", "PLACE"):
+            station = next(
+                (
+                    item["destination_station_id"]
+                    for item in reversed(values)
+                    if item["task_type"] == "NAVIGATE"
+                ),
+                "",
+            )
+            step["pickup_station_id" if kind == "PICK" else "dropoff_station_id"] = (
+                station
+            )
+            if kind == "PLACE":
+                held = ""
+                for item in values:
+                    if item["task_type"] == "PICK":
+                        held = item["object_id"]
+                    elif item["task_type"] == "PLACE":
+                        held = ""
+                step["object_id"] = held
+        self.load_steps([*values, step])
         self.changed()
 
     def add_candidate(self):
@@ -244,7 +261,11 @@ class TaskDraftPanel(QWidget):
         if self.table.rowCount() and identity != (self.session, self.context):
             self.info.setText("候选属于另一会话，请先新建草稿。")
             return
-        values = plan_steps(normalize_candidate(value["candidate"]))
+        try:
+            values = action_steps(normalize_candidate(value["candidate"]))
+        except ValueError as exc:
+            self.info.setText(str(exc))
+            return
         if self.table.rowCount() + len(values) > 256:
             self.info.setText("添加后超过256步上限，未截断或部分加入。")
             return
@@ -278,11 +299,9 @@ class TaskDraftPanel(QWidget):
 
     def save(self):
         try:
-            answer = validate_candidate(
+            prepared = validate_action_plan(
                 self.plan(), self.config.stations, self.config.objects
             )
-            if answer.missing_fields or answer.unsupported:
-                raise ValueError(answer.clarification_question or "没有可保存的任务")
             self.send(
                 "save",
                 dict(
@@ -291,7 +310,7 @@ class TaskDraftPanel(QWidget):
                     session_id=self.session,
                     input_context_id=self.context,
                     source_request_ids=self.sources,
-                    candidate=answer.candidate,
+                    candidate=prepared,
                 ),
             )
         except ValueError as exc:
@@ -318,13 +337,31 @@ class TaskDraftPanel(QWidget):
         self.history.setCurrentIndex(self.history.findData(value["draft_id"]))
         self.sources = list(value["source_request_ids"])
         self.session, self.context = value["session_id"], value["input_context_id"]
-        self.load_steps(plan_steps(normalize_candidate(value["candidate"])))
-        self.dirty, self.unknown = False, False
+        candidate = normalize_candidate(value["candidate"])
+        try:
+            expanded = action_steps(candidate)
+        except ValueError as exc:
+            self.saved = None
+            self.load_steps([])
+            self.dirty, self.unknown = True, False
+            self.info.setText(f"{exc}；请新建并拆分草稿，原记录仍保留。")
+            self.summary.setPlainText(value["summary"])
+            self.refresh_controls()
+            return
+        self.load_steps(expanded)
+        self.dirty = candidate != empty_candidate("SEQUENCE", expanded)
+        self.unknown = False
         self.info.setText(
-            f"{value['draft_id']} · 版本 {value['revision']} · {self.STATUS.get(value['state'], '未知')}"
+            f"{value['draft_id']} · 版本 {value['revision']} · "
+            + (
+                "旧草稿已展开，请保存新版本再确认"
+                if self.dirty
+                else self.STATUS.get(value["state"], "未知")
+            )
         )
         self.summary.setPlainText(
-            value["summary"] + "\n确认只保存草稿审阅结果，机器人尚未执行。"
+            plan_summary(empty_candidate("SEQUENCE", expanded))
+            + "\n确认只保存逐步动作的审阅结果，机器人尚未执行。"
         )
         self.refresh_controls()
 

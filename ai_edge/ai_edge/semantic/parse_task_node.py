@@ -138,7 +138,7 @@ class ParseTaskNode(Node):
                     result.UNSUPPORTED,
                     "UNSUPPORTED_TASK",
                 )
-                result.message = "未识别到支持的导航或搬运任务，此输入未生成候选"
+                result.message = "未识别到支持的导航、抓取、放下或搬运任务，此输入未生成候选"
                 handle.abort()
             elif answer.missing_fields:
                 result.outcome, result.error_code = (

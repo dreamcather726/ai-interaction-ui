@@ -1,6 +1,8 @@
 builtin_interfaces/Time stamp
 uint8 NAVIGATE=1
 uint8 TRANSPORT=2
+uint8 PICK=4
+uint8 PLACE=5
 uint8 task_type
 string object_id
 string pickup_station_id

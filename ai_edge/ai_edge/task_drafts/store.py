@@ -6,7 +6,8 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from ai_edge.semantic.semantic_contract import validate_candidate
+from ai_edge.semantic.semantic_contract import SemanticError
+from ai_edge.task_drafts.actions import validate_action_plan
 
 
 class DraftError(ValueError):
@@ -26,6 +27,13 @@ def plan_summary(candidate):
     for index, step in enumerate(plan_steps(candidate), 1):
         if step["task_type"] == "NAVIGATE":
             text = f"导航到 {step['destination_station_id'] or '待补充'}"
+        elif step["task_type"] in ("PICK", "PLACE"):
+            picking = step["task_type"] == "PICK"
+            station = (
+                step["pickup_station_id"] if picking else step["dropoff_station_id"]
+            )
+            verb = "抓取" if picking else "放下"
+            text = f"在 {station or '待补充工位'} {verb} {step['object_id'] or '待补充物料'}"
         else:
             text = (
                 f"将 {step['object_id'] or '待补充物料'} 从 "
@@ -166,9 +174,12 @@ class DraftStore:
             not item.strip() or len(item) > 256 for item in sources
         ):
             raise DraftError("INVALID_REQUEST", "来源请求列表无效")
-        answer = validate_candidate(value["candidate"], self.stations, self.objects)
-        if answer.unsupported or answer.missing_fields:
-            raise DraftError("MISSING_FIELDS", "草稿存在缺项，不能保存为可确认任务")
+        try:
+            prepared = validate_action_plan(
+                value["candidate"], self.stations, self.objects
+            )
+        except SemanticError as exc:
+            raise DraftError(exc.code, str(exc)) from exc
         if value["draft_id"]:
             old = self._get(value["draft_id"])
             if value["expected_revision"] != old["revision"]:
@@ -193,8 +204,8 @@ class DraftStore:
             session_id=value["session_id"],
             input_context_id=value["input_context_id"],
             source_request_ids=list(dict.fromkeys(sources)),
-            candidate=answer.candidate,
-            summary=plan_summary(answer.candidate),
+            candidate=prepared,
+            summary=plan_summary(prepared),
             confirmation_token=uuid4().hex,
             expires_ns=now_ns + int(self.timeout * 10**9),
             updated_ns=now_ns,
@@ -221,9 +232,16 @@ class DraftStore:
                 raise DraftError(
                     "DRAFT_EXPIRED", "草稿不在可确认状态，请重新保存后审阅"
                 )
-            answer = validate_candidate(draft["candidate"], self.stations, self.objects)
-            if answer.unsupported or answer.missing_fields:
-                raise DraftError("MISSING_FIELDS", "草稿不完整")
+            try:
+                prepared = validate_action_plan(
+                    draft["candidate"], self.stations, self.objects
+                )
+            except SemanticError as exc:
+                raise DraftError(exc.code, str(exc)) from exc
+            if prepared != draft["candidate"]:
+                raise DraftError(
+                    "DRAFT_REVIEW_REQUIRED", "旧草稿须先展开并重新保存，再逐步确认"
+                )
             draft["state"] = self.CONFIRMED
         else:
             if draft["state"] not in (self.EDITING, self.CONFIRMED):

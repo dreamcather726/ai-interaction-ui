@@ -4,6 +4,8 @@ uint8 UNKNOWN=0
 uint8 NAVIGATE=1
 uint8 TRANSPORT=2
 uint8 SEQUENCE=3
+uint8 PICK=4
+uint8 PLACE=5
 uint8 task_type
 string object_id
 string pickup_station_id

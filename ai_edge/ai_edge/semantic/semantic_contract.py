@@ -20,7 +20,10 @@ MAX_PLAN_STEPS = 256
 STEP_SCHEMA = {
     "type": "object",
     "properties": {
-        "task_type": {"type": "string", "enum": ["NAVIGATE", "TRANSPORT"]},
+        "task_type": {
+            "type": "string",
+            "enum": ["NAVIGATE", "TRANSPORT", "PICK", "PLACE"],
+        },
         **{field: {"type": "string"} for field in ID_FIELDS},
         "return_required": {"type": "boolean"},
     },
@@ -33,14 +36,21 @@ SCHEMA = {
         **STEP_SCHEMA["properties"],
         "task_type": {
             "type": "string",
-            "enum": ["UNKNOWN", "NAVIGATE", "TRANSPORT", "SEQUENCE"],
+            "enum": ["UNKNOWN", "NAVIGATE", "TRANSPORT", "SEQUENCE", "PICK", "PLACE"],
         },
         "steps": {"type": "array", "maxItems": MAX_PLAN_STEPS, "items": STEP_SCHEMA},
     },
     "required": [*STEP_SCHEMA["required"], "steps"],
     "additionalProperties": False,
 }
-NAMES = {0: "UNKNOWN", 1: "NAVIGATE", 2: "TRANSPORT", 3: "SEQUENCE"}
+NAMES = {
+    0: "UNKNOWN",
+    1: "NAVIGATE",
+    2: "TRANSPORT",
+    3: "SEQUENCE",
+    4: "PICK",
+    5: "PLACE",
+}
 
 
 def candidate_payload(source):
@@ -74,7 +84,8 @@ class SemanticAnswer:
 def _primitive(data, stations, objects):
     if not isinstance(data, dict) or set(data) != set(STEP_SCHEMA["required"]):
         raise SemanticError("INVALID_MODEL_OUTPUT", "任务字段不完整或含额外字段")
-    if data["task_type"] not in ("UNKNOWN", "NAVIGATE", "TRANSPORT"):
+    kinds = ("UNKNOWN", "NAVIGATE", "TRANSPORT", "PICK", "PLACE")
+    if data["task_type"] not in kinds:
         raise SemanticError("INVALID_MODEL_OUTPUT", "不支持的任务类型")
     if type(data["return_required"]) is not bool or any(
         not isinstance(data[f], str) or len(data[f]) > 128 for f in ID_FIELDS
@@ -98,9 +109,21 @@ def _primitive(data, stations, objects):
     if task == "NAVIGATE":
         required = ["destination_station_id"]
         forbidden = ("object_id", "pickup_station_id", "dropoff_station_id")
-    else:
+    elif task == "TRANSPORT":
         required = ["object_id", "pickup_station_id", "dropoff_station_id"]
         forbidden = ("destination_station_id",)
+    elif task == "PICK":
+        required = ["object_id", "pickup_station_id"]
+        forbidden = (
+            "dropoff_station_id",
+            "destination_station_id",
+            "return_station_id",
+        )
+    else:
+        required = ["object_id", "dropoff_station_id"]
+        forbidden = ("pickup_station_id", "destination_station_id", "return_station_id")
+    if task in ("PICK", "PLACE") and candidate["return_required"]:
+        raise SemanticError("INVALID_MODEL_OUTPUT", "抓取和放下不能附带返回导航")
     if any(candidate[f] for f in forbidden) or (
         not candidate["return_required"] and candidate["return_station_id"]
     ):
@@ -119,7 +142,9 @@ def _primitive(data, stations, objects):
         "请补充" + "、".join(labels[f] for f in missing) + "。" if missing else ""
     )
     if missing == ("object_id",):
-        question = "要搬运哪个物料？"
+        question = {"PICK": "要抓取哪个物料？", "PLACE": "要放下哪个物料？"}.get(
+            task, "要搬运哪个物料？"
+        )
     return SemanticAnswer(candidate, missing, question)
 
 
@@ -150,7 +175,9 @@ def validate_candidate(data, stations, objects):
     for index, step in enumerate(steps):
         answer = _primitive(step, stations, objects)
         if answer.unsupported:
-            raise SemanticError("INVALID_MODEL_OUTPUT", "列表中的步骤必须是导航或搬运")
+            raise SemanticError(
+                "INVALID_MODEL_OUTPUT", "列表中的步骤必须是导航、抓取、放下或搬运"
+            )
         checked.append(answer.candidate)
         missing.extend(f"steps[{index}].{field}" for field in answer.missing_fields)
         if answer.missing_fields and not question:
