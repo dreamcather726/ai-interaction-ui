@@ -1,5 +1,6 @@
 """ROS 可执行入口：一个命令启动工作台与现有语音处理链路。"""
 
+import faulthandler
 import signal
 import sys
 
@@ -42,6 +43,9 @@ def build_dashboard():
 
 
 def main(args=None):
+    # 原生崩溃不能由 try/except 捕获；保留所有 Python 线程的现场供实际环境定位。
+    if not faulthandler.is_enabled():
+        faulthandler.enable(all_threads=True)
     console_log(f"正在启动语音工作台；Python={sys.executable}")
     rclpy.init(args=args)
     app = QApplication([sys.argv[0]])

@@ -1,17 +1,16 @@
 """可变行数的任务草稿编辑与人工确认界面。"""
 
 from copy import deepcopy
+from contextlib import contextmanager
 from uuid import uuid4
 
-from PySide6.QtCore import Signal, Slot
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QHeaderView,
-    QLabel,
+    QLineEdit,
     QPushButton,
-    QPlainTextEdit,
-    QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -24,10 +23,22 @@ from ai_edge.semantic.semantic_contract import (
 from ai_edge.task_drafts.store import plan_summary
 from ai_edge.task_drafts.actions import action_steps, validate_action_plan
 from robot_visualization.task_model import normalize_candidate
+from robot_visualization.runtime.console import console_log
+from robot_visualization.ui.paging import (
+    ElidedLabel,
+    NoWheel,
+    PagedCombo,
+    PagedTable,
+    PagedText,
+    PageTabs,
+)
+
+ACTION_TITLES = {"NAVIGATE": "导航到", "PICK": "抓取", "PLACE": "放下"}
 
 
 class TaskDraftPanel(QWidget):
     command_requested = Signal(str, dict)
+    log_message = Signal(str)
     STATUS = {
         0: "待确认",
         1: "已确认草稿，尚未执行",
@@ -49,24 +60,64 @@ class TaskDraftPanel(QWidget):
         self.sources = []
         self.session = "ui-session-" + uuid4().hex
         self.context = "ui-context-" + uuid4().hex
+        self._form_loading = False
+        self._change_timer = QTimer(self)
+        self._change_timer.setSingleShot(True)
+        self._change_timer.timeout.connect(self._refresh_edit)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.history = QComboBox()
+        self.history = PagedCombo()
         self.history.setPlaceholderText("已保存的草稿")
         self.history.activated.connect(self.select_saved)
         layout.addWidget(self.history)
-        self.info = QLabel("新建草稿后可逐条添加任务；每个步骤都需要核对。")
-        self.info.setWordWrap(True)
+        self.info = ElidedLabel("新建草稿后可逐条添加任务；每个步骤都需要核对。")
         layout.addWidget(self.info)
-        self.table = QTableWidget(0, 3)
+        self.pages = PageTabs()
+        layout.addWidget(self.pages, 1)
+        editor = QWidget()
+        editor_layout = QVBoxLayout(editor)
+        editor_layout.setContentsMargins(0, 8, 0, 0)
+        self.pages.addTab(editor, "动作编辑")
+        self.table = PagedTable(3)
         self.table.setHorizontalHeaderLabels(["动作", "物料", "目标／操作工位"])
         self.table.horizontalHeader().setSectionResizeMode(
             QHeaderView.ResizeMode.Stretch
         )
-        self.table.setMinimumHeight(240)
-        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Fixed)
+        # 不创建表格的临时行内编辑器，双击只聚焦到下方持久输入栏。
+        self.table.setEditTriggers(PagedTable.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(PagedTable.SelectionBehavior.SelectRows)
         self.table.cellChanged.connect(self.changed)
-        layout.addWidget(self.table)
+        self.table.currentCellChanged.connect(self.select_step)
+        self.table.cellDoubleClicked.connect(self.focus_field)
+        editor_layout.addWidget(self.table, 1)
+        editor_layout.addWidget(self.table.pager)
+        fields = QHBoxLayout()
+        self.kind_input = QComboBox()
+        self.kind_input.setMaxVisibleItems(3)
+        for value, title in ACTION_TITLES.items():
+            self.kind_input.addItem(title, value)
+        self.kind_input._no_wheel = NoWheel(self.kind_input)
+        self.kind_input.installEventFilter(self.kind_input._no_wheel)
+        self.kind_input.view().viewport().installEventFilter(self.kind_input._no_wheel)
+        self.kind_input.view().setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.kind_input.view().setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.kind_input.activated.connect(self.edit_selected_step)
+        self.object_input = QLineEdit()
+        self.object_input.setPlaceholderText("物料 ID；导航时留空")
+        self.object_input.textEdited.connect(self.edit_selected_step)
+        self.station_input = QLineEdit()
+        self.station_input.setPlaceholderText("目标／操作工位 ID")
+        self.station_input.textEdited.connect(self.edit_selected_step)
+        fields.addWidget(self.kind_input)
+        fields.addWidget(self.object_input, 1)
+        fields.addWidget(self.station_input, 1)
+        editor_layout.addLayout(fields)
+        self.select_step(-1)
         row = QHBoxLayout()
         self.buttons = {}
         actions = [
@@ -81,10 +132,11 @@ class TaskDraftPanel(QWidget):
         ]
         for key, title, callback in actions:
             button = QPushButton(title)
+            button.setObjectName("small")
             button.clicked.connect(callback)
             self.buttons[key] = button
             row.addWidget(button)
-        layout.addLayout(row)
+        editor_layout.addLayout(row)
         row = QHBoxLayout()
         for key, title, callback in [
             ("save", "保存草稿", self.save),
@@ -97,12 +149,9 @@ class TaskDraftPanel(QWidget):
             self.buttons[key] = button
             row.addWidget(button)
         layout.addLayout(row)
-        self.summary = QPlainTextEdit()
-        self.summary.setReadOnly(True)
-        self.summary.setMinimumHeight(120)
-        self.summary.setMaximumHeight(240)
+        self.summary = PagedText()
         self.summary.setPlainText("确认只记录人工审阅结果；导航和抓取执行尚未接入。")
-        layout.addWidget(self.summary)
+        self.pages.addTab(self.summary, "审阅摘要")
         self.refresh_controls()
 
     def set_online(self, online):
@@ -121,6 +170,8 @@ class TaskDraftPanel(QWidget):
         free = not self.pending
         self.table.setEnabled(free)
         self.history.setEnabled(free)
+        for field in (self.kind_input, self.object_input, self.station_input):
+            field.setEnabled(free and self.table.currentRow() >= 0)
         for key in ("new", "navigate", "pick", "place", "remove", "up", "down"):
             self.buttons[key].setEnabled(free)
         self.buttons["add"].setEnabled(free and self.candidate is not None)
@@ -142,10 +193,19 @@ class TaskDraftPanel(QWidget):
             bool(reviewable and self.saved["state"] in (0, 1))
         )
 
+    @Slot()
+    @Slot(int, int)
     def changed(self, *args):
         if self.loading:
             return
         self.dirty = True
+        # 立即撤销确认资格；耗时的摘要和控件状态更新等当前编辑回调返回后再做。
+        self.buttons["confirm"].setEnabled(False)
+        self.buttons["cancel"].setEnabled(False)
+        self._change_timer.start(0)
+
+    @Slot()
+    def _refresh_edit(self):
         self.info.setText(
             f"共 {self.table.rowCount()} 步；有未保存修改，请保存后重新核对。"
         )
@@ -155,19 +215,58 @@ class TaskDraftPanel(QWidget):
             self.summary.setPlainText("草稿还没有步骤。")
         self.refresh_controls()
 
+    @Slot(int, int, int, int)
+    def select_step(self, row, *args):
+        if self.loading:
+            return
+        self._form_loading = True
+        try:
+            selected = row >= 0 and self.table.item(row, 0) is not None
+            for field in (self.kind_input, self.object_input, self.station_input):
+                field.setEnabled(selected and not self.pending)
+            if selected:
+                self.kind_input.setCurrentIndex(
+                    self.kind_input.findData(
+                        self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                    )
+                )
+                self.object_input.setText(self.table.item(row, 1).text())
+                self.station_input.setText(self.table.item(row, 2).text())
+            else:
+                self.object_input.clear()
+                self.station_input.clear()
+        finally:
+            self._form_loading = False
+
+    @Slot()
+    def edit_selected_step(self):
+        row = self.table.currentRow()
+        if self.loading or self._form_loading or self.pending or row < 0:
+            return
+        blocker = QSignalBlocker(self.table)
+        kind = self.kind_input.currentData()
+        self.table.item(row, 0).setText(ACTION_TITLES[kind])
+        self.table.item(row, 0).setData(Qt.ItemDataRole.UserRole, kind)
+        self.table.item(row, 1).setText(self.object_input.text())
+        self.table.item(row, 2).setText(self.station_input.text())
+        blocker.unblock()
+        self.changed()
+
+    @Slot(int, int)
+    def focus_field(self, row, column):
+        self.log_edit(f"编辑第 {row + 1} 步，字段 {column + 1}")
+        self.select_step(row)
+        field = (self.kind_input, self.object_input, self.station_input)[column]
+        field.setFocus(Qt.FocusReason.MouseFocusReason)
+        if isinstance(field, QLineEdit):
+            field.selectAll()
+
     def insert_step(self, step):
         row = self.table.rowCount()
         self.table.insertRow(row)
-        kind = QComboBox()
-        for title, value in (
-            ("导航到", "NAVIGATE"),
-            ("抓取", "PICK"),
-            ("放下", "PLACE"),
-        ):
-            kind.addItem(title, value)
-        kind.setCurrentIndex(kind.findData(step["task_type"]))
-        kind.currentIndexChanged.connect(self.changed)
-        self.table.setCellWidget(row, 0, kind)
+        kind = QTableWidgetItem(ACTION_TITLES[step["task_type"]])
+        kind.setData(Qt.ItemDataRole.UserRole, step["task_type"])
+        self.table.setItem(row, 0, kind)
         self.table.setItem(row, 1, QTableWidgetItem(step["object_id"]))
         field = {
             "NAVIGATE": "destination_station_id",
@@ -180,7 +279,7 @@ class TaskDraftPanel(QWidget):
         values = []
         for row in range(self.table.rowCount()):
             item = {field: "" for field in ID_FIELDS}
-            kind = self.table.cellWidget(row, 0).currentData()
+            kind = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
             item.update(task_type=kind, return_required=False)
             obj, station = self.table.item(row, 1), self.table.item(row, 2)
             item["object_id"] = obj.text().strip() if obj else ""
@@ -199,14 +298,31 @@ class TaskDraftPanel(QWidget):
             raise ValueError("请添加动作")
         return empty_candidate("SEQUENCE", values)
 
-    def load_steps(self, values):
+    @contextmanager
+    def editing_rows(self):
+        """结构修改期间不触发摘要重入，所有单元格写完后才发布新状态。"""
+        self._change_timer.stop()
         self.loading = True
+        blocker = QSignalBlocker(self.table)
+        self.table.setUpdatesEnabled(False)
         try:
+            yield
+        finally:
+            self.table.setUpdatesEnabled(True)
+            blocker.unblock()
+            self.loading = False
+            self.select_step(self.table.currentRow())
+
+    def load_steps(self, values):
+        with self.editing_rows():
             self.table.setRowCount(0)
             for step in values:
                 self.insert_step(step)
-        finally:
-            self.loading = False
+
+    def log_edit(self, message):
+        text = f"草稿编辑：{message}；共 {self.table.rowCount()} 步"
+        console_log(text)
+        self.log_message.emit(text)
 
     def new(self):
         self.saved = None
@@ -219,6 +335,7 @@ class TaskDraftPanel(QWidget):
         self.load_steps([])
         self.history.setCurrentIndex(-1)
         self.changed()
+        self.log_edit("新建")
 
     def add_blank(self, kind):
         if self.table.rowCount() >= 256:
@@ -247,8 +364,11 @@ class TaskDraftPanel(QWidget):
                     elif item["task_type"] == "PLACE":
                         held = ""
                 step["object_id"] = held
-        self.load_steps([*values, step])
+        with self.editing_rows():
+            self.insert_step(step)
+        self.table.setCurrentCell(self.table.rowCount() - 1, 0)
         self.changed()
+        self.log_edit(f"添加{ACTION_TITLES[kind]}")
 
     def add_candidate(self):
         if self.candidate is None:
@@ -271,27 +391,41 @@ class TaskDraftPanel(QWidget):
             return
         self.session, self.context = identity
         self.sources.append(value["request_id"])
-        self.load_steps([*self.steps(), *values])
+        with self.editing_rows():
+            for step in values:
+                self.insert_step(step)
+        self.table.setCurrentCell(self.table.rowCount() - 1, 0)
         self.changed()
+        self.log_edit("加入语音候选")
 
     def remove_step(self):
         row = self.table.currentRow()
         if row >= 0:
-            self.table.removeRow(row)
+            with self.editing_rows():
+                self.table.removeRow(row)
+            if self.table.rowCount():
+                self.table.setCurrentCell(min(row, self.table.rowCount() - 1), 0)
             self.changed()
+            self.log_edit(f"删除第 {row + 1} 步")
 
     def move_step(self, direction):
         row = self.table.currentRow()
         other = row + direction
         if row < 0 or not 0 <= other < self.table.rowCount():
             return
-        values = self.steps()
-        values[row], values[other] = values[other], values[row]
-        self.load_steps(values)
+        with self.editing_rows():
+            for column in range(self.table.columnCount()):
+                first = self.table.takeItem(row, column)
+                second = self.table.takeItem(other, column)
+                self.table.setItem(row, column, second)
+                self.table.setItem(other, column, first)
         self.table.selectRow(other)
         self.changed()
+        self.log_edit(f"第 {row + 1} 步移到第 {other + 1} 步")
 
     def send(self, operation, value):
+        self._change_timer.stop()
+        self.log_edit(f"请求 {operation}")
         self.pending = True
         self.info.setText("正在处理草稿请求……")
         self.refresh_controls()
@@ -333,6 +467,7 @@ class TaskDraftPanel(QWidget):
             self.apply_record(self.records[key])
 
     def apply_record(self, value):
+        self._change_timer.stop()
         self.saved = deepcopy(value)
         self.history.setCurrentIndex(self.history.findData(value["draft_id"]))
         self.sources = list(value["source_request_ids"])

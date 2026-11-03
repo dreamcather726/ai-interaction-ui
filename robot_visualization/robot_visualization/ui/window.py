@@ -6,16 +6,11 @@ import time
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QGridLayout,
     QHBoxLayout,
     QLineEdit,
-    QListWidget,
     QListWidgetItem,
     QMainWindow,
-    QPlainTextEdit,
     QPushButton,
-    QScrollArea,
-    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -24,6 +19,7 @@ from robot_visualization.state import STAGES, RecordStore
 from robot_visualization.ui.theme import STYLE
 from robot_visualization.ui.widgets import Badge, Card, PipelineStrip, glyph, label
 from robot_visualization.ui.task_drafts import TaskDraftPanel
+from robot_visualization.ui.paging import ElidedLabel, PagedList, PagedText, PageTabs
 from robot_visualization.task_model import normalize_candidate
 from ai_edge.task_drafts.store import plan_summary
 from ai_edge.task_drafts.actions import action_steps
@@ -49,6 +45,7 @@ class DashboardWindow(QMainWindow):
         self.can_close = False
         self.closing = False
         self.setWindowTitle("AI 语音交互工作台")
+        self.setMinimumSize(880, 620)
         self.resize(1240, 840)
         self.setStyleSheet(STYLE)
         self.build_ui()
@@ -71,8 +68,8 @@ class DashboardWindow(QMainWindow):
         canvas.setObjectName("canvas")
         self.setCentralWidget(canvas)
         layout = QVBoxLayout(canvas)
-        layout.setContentsMargins(22, 18, 22, 18)
-        layout.setSpacing(16)
+        layout.setContentsMargins(18, 12, 18, 12)
+        layout.setSpacing(10)
         layout.addLayout(self._build_header())
         layout.addWidget(self._build_content())
 
@@ -89,24 +86,18 @@ class DashboardWindow(QMainWindow):
         return header
 
     def _build_content(self):
-        """按原有网格位置组合五张卡片，统一放入滚动区域。"""
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        content = QWidget()
-        grid = QGridLayout(content)
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setSpacing(16)
-        grid.setColumnStretch(0, 3)
-        grid.setColumnStretch(1, 2)
-        scroll.setWidget(content)
-
-        grid.addWidget(self._build_recording_card(), 0, 0)
-        grid.addWidget(self._build_service_card(), 0, 1)
-        grid.addWidget(self._build_result_card(), 1, 0)
-        grid.addWidget(self._build_history_card(), 1, 1)
-        grid.addWidget(self._build_draft_card(), 2, 0, 1, 2)
-        grid.addWidget(self._build_log_card(), 3, 0, 1, 2)
-        return scroll
+        """固定页面切换；列表与文本各自分页，不使用外层滚动区域。"""
+        self.pages = PageTabs()
+        for title, build in (
+            ("语音输入", self._build_recording_card),
+            ("识别结果", self._build_result_card),
+            ("任务草稿", self._build_draft_card),
+            ("历史记录", self._build_history_card),
+            ("服务状态", self._build_service_card),
+            ("运行日志", self._build_log_card),
+        ):
+            self.pages.addTab(build(), title)
+        return self.pages
 
     def _build_recording_card(self):
         """创建录音提示、状态标签和开始／停止按钮。"""
@@ -123,8 +114,8 @@ class DashboardWindow(QMainWindow):
         self.recording_label = label("等待麦克风与模型连接", "hero", True)
         self.recording_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         recording.body.addWidget(self.recording_label)
-        self.capture_hint = label("录音状态以设备广播为准", "muted", True)
-        recording.body.addWidget(self.capture_hint)
+        self.capture_hint = PagedText("录音状态以设备广播为准")
+        recording.body.addWidget(self.capture_hint, 1)
         controls = QHBoxLayout()
         self.start_button = QPushButton("开始录音  Alt+R")
         self.start_button.setObjectName("primary")
@@ -135,8 +126,8 @@ class DashboardWindow(QMainWindow):
         controls.addWidget(self.start_button)
         controls.addWidget(self.stop_button)
         recording.body.addLayout(controls)
-        self.control_message = label("", "muted", True)
-        recording.body.addWidget(self.control_message)
+        self.control_message = PagedText()
+        recording.body.addWidget(self.control_message, 1)
         return recording
 
     def _build_service_card(self):
@@ -158,11 +149,13 @@ class DashboardWindow(QMainWindow):
             self.service_badges[name] = badge
             row.addWidget(badge)
             services.body.addLayout(row)
-        services.body.addWidget(label(f"语义模型：{self.config.model}", "muted", True))
         stations = "、".join(self.config.stations) or "未配置"
         objects = "、".join(self.config.objects) or "未配置"
         services.body.addWidget(
-            label(f"工位：{stations}\n物料：{objects}", "muted", True)
+            PagedText(
+                f"语义模型：{self.config.model}\n工位：{stations}\n物料：{objects}"
+            ),
+            1,
         )
         return services
 
@@ -173,24 +166,20 @@ class DashboardWindow(QMainWindow):
         results.heading.addWidget(self.stage_badge)
         self.pipeline = PipelineStrip()
         results.body.addWidget(self.pipeline)
-        self.request_label = label("尚无处理记录", "muted", True)
+        self.request_label = ElidedLabel("尚无处理记录")
         results.body.addWidget(self.request_label)
-        results.body.addWidget(label("识别文字", "section"))
-        self.asr_text = QTextEdit()
-        self.asr_text.setReadOnly(True)
-        self.asr_text.setMinimumHeight(100)
-        results.body.addWidget(self.asr_text)
-        results.body.addWidget(label("任务候选", "section"))
-        self.candidate_text = QPlainTextEdit()
-        self.candidate_text.setReadOnly(True)
-        self.candidate_text.setMinimumHeight(140)
-        results.body.addWidget(self.candidate_text)
-        self.dialogue_hint = label("", "section", True)
+        self.result_pages = PageTabs()
+        self.asr_text = PagedText()
+        self.candidate_text = PagedText()
+        self.result_message = PagedText()
+        self.result_pages.addTab(self.asr_text, "识别文字")
+        self.result_pages.addTab(self.candidate_text, "动作预览")
+        self.result_pages.addTab(self.result_message, "处理详情")
+        results.body.addWidget(self.result_pages, 1)
+        self.dialogue_hint = ElidedLabel()
         self.dialogue_hint.hide()
         results.body.addWidget(self.dialogue_hint)
-        self.result_message = label("", "muted", True)
-        results.body.addWidget(self.result_message)
-        self.file_label = label(f"音频目录：{self.config.audio_root}", "muted", True)
+        self.file_label = ElidedLabel(f"音频目录：{self.config.audio_root}")
         self.file_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.TextSelectableByMouse
         )
@@ -200,10 +189,10 @@ class DashboardWindow(QMainWindow):
     def _build_history_card(self):
         """创建历史记录选择与按请求 ID 查询入口。"""
         history = Card("最近记录", "按请求 ID 查看已有结果；最多保留 100 条。")
-        self.history = QListWidget()
+        self.history = PagedList()
         self.history.currentItemChanged.connect(self.select_record)
-        self.history.setMinimumHeight(240)
-        history.body.addWidget(self.history)
+        history.body.addWidget(self.history, 1)
+        history.body.addWidget(self.history.pager)
         query_row = QHBoxLayout()
         self.query_input = QLineEdit()
         self.query_input.setPlaceholderText("输入原始音频 request_id")
@@ -220,20 +209,19 @@ class DashboardWindow(QMainWindow):
         logs = Card("运行日志")
         clear = QPushButton("清空显示")
         clear.setObjectName("small")
-        self.logs = QPlainTextEdit()
-        self.logs.setReadOnly(True)
+        self.logs = PagedText()
         self.logs.setMaximumBlockCount(1000)
-        self.logs.setMinimumHeight(130)
         clear.clicked.connect(self.logs.clear)
         logs.heading.addWidget(clear)
-        logs.body.addWidget(self.logs)
+        logs.body.addWidget(self.logs, 1)
         return logs
 
     def _build_draft_card(self):
         card = Card("任务草稿与确认", "按实际顺序增删步骤，保存后逐步核对并确认。")
         self.draft_panel = TaskDraftPanel(self.config)
         self.draft_panel.command_requested.connect(self.draft_requested.emit)
-        card.body.addWidget(self.draft_panel)
+        self.draft_panel.log_message.connect(self.append_log)
+        card.body.addWidget(self.draft_panel, 1)
         return card
 
     @Slot(dict)
@@ -353,6 +341,7 @@ class DashboardWindow(QMainWindow):
                 self.history.addItem(item)
                 if request_id == self.selected_request:
                     self.history.setCurrentItem(item)
+            self.history.refresh_pages()
         finally:
             self.history.blockSignals(False)
 
@@ -418,7 +407,7 @@ class DashboardWindow(QMainWindow):
             )
         elif parsed.get("outcome") == 0 and parsed.get("success"):
             self.dialogue_hint.setText(
-                "候选信息已完整，可加入下方草稿逐步核对；尚未执行。"
+                "候选信息已完整，可到任务草稿页加入候选并逐步核对；尚未执行。"
             )
         else:
             self.dialogue_hint.clear()
@@ -431,8 +420,11 @@ class DashboardWindow(QMainWindow):
         error = parsed.get("error_code") or state.get("error_code")
         if error:
             messages.append(f"错误码：{error}")
-        self.result_message.setText("\n".join(dict.fromkeys(m for m in messages if m)))
         path = state.get("audio_path")
+        messages.append(
+            f"音频文件：{path}" if path else f"音频目录：{self.config.audio_root}"
+        )
+        self.result_message.setText("\n".join(dict.fromkeys(m for m in messages if m)))
         self.file_label.setText(
             f"音频文件：{path}" if path else f"音频目录：{self.config.audio_root}"
         )

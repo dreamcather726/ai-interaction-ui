@@ -9,7 +9,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QAbstractItemView, QScrollArea
+
+    from robot_visualization.ui.paging import PagedText
 
     from robot_visualization.ui.window import DashboardWindow
 
@@ -185,7 +187,10 @@ class WindowTests(unittest.TestCase):
         panel.add_candidate()
         self.assertEqual(panel.table.rowCount(), 4)
         self.assertEqual(
-            [panel.table.cellWidget(row, 0).currentData() for row in range(4)],
+            [
+                panel.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+                for row in range(4)
+            ],
             ["NAVIGATE", "PICK", "NAVIGATE", "PLACE"],
         )
         self.assertEqual(
@@ -224,6 +229,70 @@ class WindowTests(unittest.TestCase):
         )
         panel.confirm()
         self.assertEqual(received, [])
+
+    def test_double_click_material_edits_in_persistent_field(self):
+        self.window.pages.setCurrentIndex(2)
+        panel = self.window.draft_panel
+        panel.new()
+        panel.add_blank("PICK")
+        self.app.processEvents()
+        field = panel.object_input
+        cell = panel.table.visualItemRect(panel.table.item(0, 1)).center()
+        QTest.mouseDClick(panel.table.viewport(), Qt.MouseButton.LeftButton, pos=cell)
+        QTest.keyClicks(field, "box_1")
+        self.app.processEvents()
+        self.assertEqual(panel.steps()[0]["object_id"], "box_1")
+        self.assertIs(field, panel.object_input)
+        self.assertEqual(
+            panel.table.editTriggers(), QAbstractItemView.EditTrigger.NoEditTriggers
+        )
+        self.assertIsNone(panel.table.cellWidget(0, 1))
+        panel.add_blank("NAVIGATE")
+        panel.table.selectRow(0)
+        panel.move_step(1)
+        self.assertEqual(panel.steps()[1]["object_id"], "box_1")
+        panel.remove_step()
+        self.assertEqual(len(panel.steps()), 1)
+        self.assertIs(field, panel.object_input)
+
+    def test_paging_keeps_off_page_steps_and_deletes_visible_selection(self):
+        self.window.pages.setCurrentIndex(2)
+        panel = self.window.draft_panel
+        panel.new()
+        for index in range(40):
+            panel.add_blank("NAVIGATE")
+            panel.table.item(index, 2).setText(f"station_{index}")
+        self.app.processEvents()
+        self.assertGreater(panel.table.pager.pages, 1)
+        panel.table.pager.go(0)
+        self.app.processEvents()
+        self.assertEqual(panel.table.currentRow(), 0)
+        panel.table.pager.go(1)
+        row = panel.table.currentRow()
+        self.assertFalse(panel.table.isRowHidden(row))
+        self.assertEqual(panel.steps()[39]["destination_station_id"], "station_39")
+        removed = panel.steps()[row]["destination_station_id"]
+        panel.remove_step()
+        self.assertNotIn(removed, [s["destination_station_id"] for s in panel.steps()])
+        self.assertEqual(len(panel.steps()), 39)
+
+    def test_text_pages_preserve_original_text_without_scroll_area(self):
+        self.assertEqual(self.window.pages.count(), 6)
+        self.assertFalse(self.window.findChildren(QScrollArea))
+        view = PagedText()
+        view.resize(400, 180)
+        view.show()
+        try:
+            value = "\n".join(f"第 {index} 行测试文字" for index in range(100))
+            view.setPlainText(value)
+            self.app.processEvents()
+            first = view.body.text()
+            self.assertGreater(view.pager.pages, 1)
+            view.pager.go(1)
+            self.assertNotEqual(first, view.body.text())
+            self.assertEqual(view.toPlainText(), value)
+        finally:
+            view.close()
 
 
 if __name__ == "__main__":

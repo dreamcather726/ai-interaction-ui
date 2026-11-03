@@ -59,9 +59,14 @@ QListWidget { border: none; background: transparent; outline: none; }
 QListWidget::item { border-radius: 7px; padding: 12px 8px; margin-bottom: 5px; color: #657a96; }
 QListWidget::item:selected { background: #eaf2ff; color: #2479e8; }
 QListWidget::item:hover { background: #f0f5fc; }
-QScrollArea { border: none; background: transparent; }
-QScrollBar:vertical { background: transparent; width: 7px; }
-QScrollBar::handle:vertical { background: #d2ddea; border-radius: 3px; min-height: 30px; }
-QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+QTabWidget::pane { border: none; padding-top: 8px; }
+QTabBar::tab { background: #e9eff8; border-radius: 6px; padding: 8px 14px;
+    margin-right: 4px; color: #627b99; }
+QTabBar::tab:selected { background: #237df0; color: white; }
+QLabel#pagedText { background: #f7faff; border-radius: 7px; color: #29486d; }
+QTableWidget { background: #fafcff; border: 1px solid #dce6f3;
+    gridline-color: #e4ebf5; selection-background-color: #d6e8ff; }
+QHeaderView::section { background: #edf3fb; padding: 6px; border: none; }
+QComboBox { background: #fafcff; border: 1px solid #dce6f3; padding: 5px; }
 QToolTip { color: #28486d; background: white; border: 1px solid #d5e2f1; padding: 7px; }
 """
