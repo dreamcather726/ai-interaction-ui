@@ -33,7 +33,7 @@ class RobotStateSimulator(Node):
         self.status_pub = self.create_publisher(String, "/robot_status", 10)
         self.started = time.monotonic()
         self.timer = self.create_timer(0.1, self.publish)
-        self.get_logger().info("[SIM] 底盘巡航、电池和网络状态已启动；没有真实运动输出")
+        self.get_logger().info("[SIM] 底盘巡航与电池状态已启动；没有真实运动输出")
 
     def publish(self):
         elapsed = time.monotonic() - self.started
@@ -75,11 +75,6 @@ class RobotStateSimulator(Node):
                         "stamp": {"sec": stamp.sec, "nanosec": stamp.nanosec},
                         "chassis_ready": True,
                         "camera_ready": True,
-                        "network_connected": True,
-                        "network_latency_ms": round(
-                            8.0 + 2 * math.sin(elapsed * 0.8), 1
-                        ),
-                        "ip": "127.0.0.1",
                         "mode": "模拟巡航（独立于任务演示）",
                         "stations": STATIONS,
                     },

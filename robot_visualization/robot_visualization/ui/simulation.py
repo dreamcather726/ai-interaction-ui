@@ -115,11 +115,6 @@ class SimulationView:
                 window.robot_page_battery.setFormat("SIM 电量 %p%")
         elif kind == "sim_status":
             self.status = value
-            connected = "已连接" if value.get("network_connected") else "未连接"
-            self.set_hardware_text(
-                "网络连接",
-                f"SIM 网络{connected}\nIP {value.get('ip', '—')}\n延迟 {value.get('network_latency_ms', '—')} ms",
-            )
             self.render_chassis()
             self.render_camera_status()
         elif kind == "sim_task":

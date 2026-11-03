@@ -15,6 +15,7 @@ from robot_visualization.state import STAGES, RecordStore
 from robot_visualization.ui.theme import STYLE
 from robot_visualization.ui.monitor_layout import build_monitor_layout, move_log_card
 from robot_visualization.ui.draft_workflow import HomeDraftWorkflow
+from robot_visualization.ui.network_status import LocalNetworkStatus
 from robot_visualization.runtime.console import format_log, log_level
 from robot_visualization.task_model import normalize_candidate
 from ai_edge.task_drafts.store import plan_summary
@@ -66,6 +67,7 @@ class DashboardWindow(QMainWindow):
 
             self.simulation_view = SimulationView(self)
         self.home_drafts = HomeDraftWorkflow(self)
+        self.network_status = LocalNetworkStatus(self)
         self.refresh_controls()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -416,6 +418,7 @@ class DashboardWindow(QMainWindow):
         if self.can_close:
             self.timer.stop()
             self.clock_timer.stop()
+            self.network_status.stop()
             event.accept()
             return
         event.ignore()

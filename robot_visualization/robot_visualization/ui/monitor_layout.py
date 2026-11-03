@@ -456,8 +456,9 @@ def build_logs(window):
     row.addWidget(window.logs, 7)
     source = PagedText(
         "数据来源说明\n服务徽章与语音处理阶段来自现有ROS接口。\n"
-        "地图、相机、底盘、电池、网络及机器人执行数据均待接入。\n"
-        "百分比仅作语音阶段示意；候选和草稿确认不表示机器人已经执行。"
+        "网络信息来自运行工作台的电脑；WSL 下显示 Ubuntu 虚拟网卡。\n"
+        "模拟模式的地图、相机、底盘和电池由模拟器提供。\n"
+        "语音阶段与任务执行进度分别展示；执行进度以反馈为准。"
     )
     row.addWidget(source, 3)
     card.body.addLayout(row, 1)
@@ -538,7 +539,7 @@ def build_sidebar(window):
         ("机器人状态", "当前位置 / 线速度 / 角速度 / 运行模式：待接入"),
         ("底盘状态", "运动状态 / 速度 / 转向角：待接入"),
         ("电池电量", "电量 / 电压 / 续航：待接入"),
-        ("网络连接", "Wi-Fi / IP / 延迟：待接入"),
+        ("网络连接", "正在读取本机网络接口；端到端延迟未测量"),
     ):
         card = sidebar_card(compact_card(title))
         window.hardware_labels[title] = label(text, "muted", True)

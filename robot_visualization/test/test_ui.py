@@ -4,6 +4,7 @@ import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
@@ -512,6 +513,7 @@ class WindowTests(unittest.TestCase):
             self.assertFalse(view.pixmap().isNull())
         window.switch_page(window.page_indexes["机器人状态"])
         self.app.processEvents()
+        network_before = window.hardware_labels["网络连接"].text()
         window.receive_record(
             "sim_status",
             {
@@ -526,7 +528,8 @@ class WindowTests(unittest.TestCase):
         self.assertIn("82%", window.hardware_page_labels["电池电量"].text())
         self.assertIn("-2.00", window.hardware_page_labels["机器人状态"].text())
         self.assertIn("rgb8", window.hardware_page_labels["相机状态"].text())
-        self.assertIn("8.2", window.hardware_page_labels["网络连接"].text())
+        self.assertEqual(window.hardware_page_labels["网络连接"].text(), network_before)
+        self.assertNotIn("SIM 网络", network_before)
         self.assertEqual(window.robot_page_battery.value(), 82)
         window.receive_record("sim_battery", {"percentage": 0.63, "voltage": 24.0})
         self.assertEqual(
@@ -598,6 +601,24 @@ class WindowTests(unittest.TestCase):
         )
         self.window.receive_record("parse", parsed)
         return parsed
+
+    def test_network_card_uses_local_interface_data_and_clears_stale_ip(self):
+        with patch(
+            "robot_visualization.ui.network_status.read_active_interfaces",
+            return_value=["eth0: 192.0.2.10"],
+        ):
+            self.window.network_status.refresh()
+        text = self.window.hardware_labels["网络连接"].text()
+        self.assertIn("192.0.2.10", text)
+        self.assertIn("端到端延迟：未测量", text)
+        self.assertNotIn("SIM", text)
+        with patch(
+            "robot_visualization.ui.network_status.read_active_interfaces",
+            return_value=[],
+        ):
+            self.window.network_status.refresh()
+        self.assertIn("未发现", self.window.hardware_labels["网络连接"].text())
+        self.assertNotIn("192.0.2.10", self.window.hardware_labels["网络连接"].text())
 
     def test_home_candidate_save_confirm_execute_never_requires_page_switch(self):
         parsed = self._prepare_home_candidate()

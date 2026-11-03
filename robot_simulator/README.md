@@ -96,7 +96,7 @@ ROS 图中的地图、相机、底盘节点分别命名为 /map、/camera/camera
 | /camera/image_raw | sensor_msgs/Image；rgb8，默认640×480、10fps，时间文字与移动圆点；SensorData QoS |
 | /odom | nav_msgs/Odometry；odom → base_link，A/B之间模拟巡航；SensorData QoS |
 | /battery、/battery_state | sensor_msgs/BatteryState；100%缓慢降至20%，电压/电流有波动；SensorData QoS |
-| /robot_status | std_msgs/String；JSON，simulator=true、时间、底盘/相机/网络状态 |
+| /robot_status | std_msgs/String；JSON，simulator=true、时间、底盘/相机状态；不模拟网络 |
 | /task/prepare、/simulator/task/prepare | robot_interfaces/PrepareTask；先传入完整TaskSpec，纯内存保存 |
 | /task/execute、/simulator/task/execute | robot_interfaces/ExecuteTask；串行动作反馈、完成与取消 |
 | /task/snapshot、/simulator/task/snapshot | robot_interfaces/TaskSnapshot；模拟步骤和进度 |
@@ -121,7 +121,8 @@ ros2 action list -t
 rqt_graph
 ```
 
-工作台验收：地图出现 A/B 和移动位置点；相机时间变化且圆点移动；右侧电量/位置/延迟变化；
+工作台验收：地图出现 A/B 和移动位置点；相机时间变化且圆点移动；右侧电量/位置变化；
+网络卡片显示本机实际活动接口和 IP（WSL 下为 Ubuntu 虚拟网卡），端到端延迟未测量；
 保存并确认长草稿后按真实动作数推进；中途取消后显示取消终态且进度不变成100%；
 关闭窗口检查由窗口启动的模拟进程退出，外部启动的保留；不传use_simulator时仍是原流程。
 
