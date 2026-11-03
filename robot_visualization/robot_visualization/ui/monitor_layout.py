@@ -351,6 +351,17 @@ def build_commands(window):
     window.dialogue_hint = ElidedLabel()
     window.dialogue_hint.hide()
     card.body.addWidget(window.dialogue_hint)
+    window.home_add_candidate_button = QPushButton("加入当前候选到草稿")
+    window.home_add_candidate_button.setObjectName("primary")
+    window.home_add_candidate_button.setEnabled(False)
+    card.body.addWidget(window.home_add_candidate_button)
+    window.home_draft_hint = ElidedLabel(
+        "确认草稿后将自动下发模拟执行"
+        if getattr(window.config, "use_simulator", False)
+        else "确认草稿只记录审阅结果；真实执行尚未接入"
+    )
+    window.home_draft_hint.setObjectName("muted")
+    card.body.addWidget(window.home_draft_hint)
     return card
 
 
@@ -404,6 +415,18 @@ def build_progress(window):
     window.stage_progress.setValue(0)
     window.stage_progress.setFormat("语音阶段示意 %p% · 非机器人执行进度")
     card.body.addWidget(window.stage_progress)
+    draft_actions = QHBoxLayout()
+    window.home_draft_status = ElidedLabel("草稿未保存")
+    draft_actions.addWidget(window.home_draft_status, 1)
+    window.home_save_draft_button = QPushButton("保存草稿")
+    window.home_save_draft_button.setObjectName("small")
+    window.home_save_draft_button.setEnabled(False)
+    draft_actions.addWidget(window.home_save_draft_button)
+    window.home_confirm_draft_button = QPushButton("立即确认")
+    window.home_confirm_draft_button.setObjectName("primary")
+    window.home_confirm_draft_button.setEnabled(False)
+    draft_actions.addWidget(window.home_confirm_draft_button)
+    card.body.addLayout(draft_actions)
     return card
 
 

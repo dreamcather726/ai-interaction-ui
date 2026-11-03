@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from robot_visualization.state import STAGES, RecordStore
 from robot_visualization.ui.theme import STYLE
 from robot_visualization.ui.monitor_layout import build_monitor_layout, move_log_card
+from robot_visualization.ui.draft_workflow import HomeDraftWorkflow
 from robot_visualization.runtime.console import format_log, log_level
 from robot_visualization.task_model import normalize_candidate
 from ai_edge.task_drafts.store import plan_summary
@@ -64,6 +65,7 @@ class DashboardWindow(QMainWindow):
             from robot_visualization.ui.simulation import SimulationView
 
             self.simulation_view = SimulationView(self)
+        self.home_drafts = HomeDraftWorkflow(self)
         self.refresh_controls()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -146,6 +148,7 @@ class DashboardWindow(QMainWindow):
     @Slot(dict)
     def receive_draft(self, value):
         self.draft_panel.receive(value)
+        self.home_drafts.receive(value)
         if (
             self.simulation_view is not None
             and value.get("operation") == "confirm"
@@ -178,6 +181,7 @@ class DashboardWindow(QMainWindow):
         self.query_button.setEnabled(bool(value.get("query") and not self.closing))
         self.draft_panel.setEnabled(not self.closing)
         self.draft_panel.set_online(value.get("drafts", False))
+        self.home_drafts.refresh()
         for panel in self.catalog_panels.values():
             panel.setEnabled(not self.closing)
 
@@ -243,6 +247,7 @@ class DashboardWindow(QMainWindow):
         else:
             self.recording_label.setText("设备录音状态未确认")
             self.capture_badge.update_status("未确认", "warn")
+        self.home_drafts.refresh()
 
     def query_record(self):
         request_id = self.query_input.text().strip()
@@ -257,6 +262,8 @@ class DashboardWindow(QMainWindow):
     def receive_record(self, kind, value):
         if self.simulation_view is not None and kind.startswith("sim_"):
             self.simulation_view.receive(kind, value)
+            if kind == "sim_task":
+                self.home_drafts.refresh()
             return
         request_id = value.get("request_id")
         is_new = request_id not in self.store.records
@@ -308,7 +315,8 @@ class DashboardWindow(QMainWindow):
         )
         # 只是已有语音处理阶段的示意值，不代表底盘／机械臂执行进度。
         progress = {0: 0, 1: 15, 2: 35, 3: 55, 4: 75, 5: 100, 6: 100, 10: 100}
-        self.stage_progress.setValue(progress.get(stage, 0))
+        if self.simulation_view is None:
+            self.stage_progress.setValue(progress.get(stage, 0))
         self.request_label.setText(f"请求：{self.selected_request or '—'}")
         self.asr_text.setPlainText(asr.get("text", ""))
         self._show_candidate(parsed)
@@ -316,6 +324,7 @@ class DashboardWindow(QMainWindow):
         self._show_result_details(state, parsed)
         if self.simulation_view is not None and self.simulation_view.task:
             self.simulation_view.render_task()
+        self.home_drafts.refresh()
 
     def _show_candidate(self, parsed):
         """展示单任务或有序步骤；草稿编辑独立于识别历史。"""
@@ -353,7 +362,7 @@ class DashboardWindow(QMainWindow):
             )
         elif parsed.get("outcome") == 0 and parsed.get("success"):
             self.dialogue_hint.setText(
-                "候选信息已完整，可到左侧任务管理加入候选并逐步核对；尚未执行。"
+                "候选信息已完整，可在下方加入草稿；保存成功后点击“立即确认”。"
             )
         else:
             self.dialogue_hint.clear()

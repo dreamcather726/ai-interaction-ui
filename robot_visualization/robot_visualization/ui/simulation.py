@@ -123,7 +123,10 @@ class SimulationView:
             self.render_chassis()
             self.render_camera_status()
         elif kind == "sim_task":
-            if value.get("task_id") and value["task_id"] != self.task.get("task_id"):
+            if any(
+                key in value and value[key] != self.task.get(key)
+                for key in ("task_id", "draft_id", "draft_revision")
+            ):
                 self.task = {}
             self.task.update(value)
             self.render_task()
@@ -193,7 +196,7 @@ class SimulationView:
             window.stage_progress.setValue(
                 round(max(0, min(1, task["progress"])) * 100)
             )
-        elif active:
+        elif active or failed:
             window.stage_progress.setValue(0)
         window.stage_progress.setFormat("模拟执行进度 %p%")
         window.stage_badge.update_status(

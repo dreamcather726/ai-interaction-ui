@@ -31,6 +31,7 @@ class SimulationClient:
         self.goal = None
         self.cancel_requested = False
         self.dispatched = set()
+        self.source_draft = {}
         self.subscriptions = [
             node.create_subscription(
                 OccupancyGrid,
@@ -104,17 +105,20 @@ class SimulationClient:
         except (ValueError, TypeError):
             pass
 
+    def emit_task(self, value):
+        self.events.record.emit("sim_task", dict(value, **self.source_draft))
+
     def announce(self, message, *, failed=False):
         self.events.report_log(("[E] " if failed else "[I] ") + "[SIM] " + message)
-        self.events.record.emit(
-            "sim_task",
-            {
-                "task_id": self.goal.task_id if self.goal else "",
-                "message": message,
-                "failed": failed,
-                "active": self.pending is not None,
-            },
-        )
+        value = {
+            "task_id": self.goal.task_id if self.goal else "",
+            "message": message,
+            "failed": failed,
+            "active": self.pending is not None,
+        }
+        if failed and self.pending is None:
+            value["state"] = 4
+        self.emit_task(value)
 
     def execute(self, draft):
         if self.pending is not None:
@@ -126,6 +130,8 @@ class SimulationClient:
                 "此版本已提交过模拟，不自动重放；修改并保存新版本后再确认", failed=True
             )
             return
+        self.source_draft = {"draft_id": key[0], "draft_revision": key[1]}
+        self.goal = None
         try:
             if draft.get("state") != 1:
                 raise ValueError("只能模拟执行明确确认的草稿")
@@ -165,18 +171,31 @@ class SimulationClient:
                 request.request_id,
             )
             self.dispatched.add(key)
+            self.emit_task(
+                {
+                    "task_id": self.goal.task_id,
+                    "progress": 0.0,
+                    "step": "",
+                    "active": True,
+                    "failed": False,
+                }
+            )
             self.announce("已确认草稿，正在准备模拟执行；不会调用真实 /task/execute")
         except (ValueError, KeyError, TypeError) as exc:
             self.announce(str(exc), failed=True)
 
     def on_feedback(self, message):
         feedback = message.feedback
-        if self.goal and (feedback.task_id, feedback.dispatch_id) == (
-            self.goal.task_id,
-            self.goal.dispatch_id,
+        if (
+            self.pending is not None
+            and self.goal
+            and (feedback.task_id, feedback.dispatch_id)
+            == (
+                self.goal.task_id,
+                self.goal.dispatch_id,
+            )
         ):
-            self.events.record.emit(
-                "sim_task",
+            self.emit_task(
                 {
                     "task_id": feedback.task_id,
                     "message": feedback.message,
@@ -206,7 +225,19 @@ class SimulationClient:
             if phase == "prepare":
                 if self.cancel_requested:
                     self.pending = None
-                    self.announce("模拟准备已取消，未发送执行 Goal")
+                    message = "模拟准备已取消，未发送执行 Goal"
+                    self.emit_task(
+                        {
+                            "task_id": self.goal.task_id,
+                            "message": message,
+                            "progress": 0.0,
+                            "active": False,
+                            "failed": True,
+                            "state": 5,
+                            "error_code": "CANCELED",
+                        }
+                    )
+                    self.events.report_log("[I] [SIM] " + message)
                     return
                 if (
                     not response.success
@@ -247,8 +278,7 @@ class SimulationClient:
                 ):
                     raise ValueError("模拟执行结果与当前任务不匹配")
                 self.pending, self.handle = None, None
-                self.events.record.emit(
-                    "sim_task",
+                self.emit_task(
                     {
                         "task_id": result.task_id,
                         "message": result.message,

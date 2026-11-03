@@ -61,6 +61,8 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(self.window.start_button.isEnabled())
         self.assertEqual(self.window.asr_text.toPlainText(), "")
         self.assertEqual(self.window.history.count(), 0)
+        self.assertFalse(self.window.home_add_candidate_button.isEnabled())
+        self.assertFalse(self.window.home_confirm_draft_button.isEnabled())
 
     def test_duplicate_click_does_not_send_two_starts(self):
         sent = []
@@ -565,6 +567,211 @@ class WindowTests(unittest.TestCase):
         )
         self.assertEqual(window.stage_progress.value(), 25)
         self.assertFalse(window.cancel_simulation_button.isEnabled())
+
+    def _prepare_home_candidate(self):
+        self.window.can_close = True
+        self.window.close()
+        self.window = DashboardWindow(
+            SimpleNamespace(
+                model="qwen3.5:2b",
+                stations=["station_a", "station_b"],
+                objects=["box_1"],
+                audio_root=Path("/tmp/audio"),
+                use_simulator=True,
+            )
+        )
+        self.window.show()
+        self.app.processEvents()
+        self.window.receive_availability(dict(self.value, drafts=True))
+        parsed = dict(
+            request_id="home-audio",
+            session_id="voice-session",
+            input_context_id="voice-context",
+            success=True,
+            outcome=0,
+            candidate=dict(
+                task_type=2,
+                object_id="box_1",
+                pickup_station_id="station_a",
+                dropoff_station_id="station_b",
+            ),
+        )
+        self.window.receive_record("parse", parsed)
+        return parsed
+
+    def test_home_candidate_save_confirm_execute_never_requires_page_switch(self):
+        parsed = self._prepare_home_candidate()
+        window = self.window
+        sent = []
+        window.draft_requested.connect(
+            lambda operation, body: sent.append((operation, body))
+        )
+        self.assertEqual(window.pages.currentIndex(), window.page_indexes["首页"])
+        self.assertTrue(window.home_add_candidate_button.isEnabled())
+        self.assertEqual(window.stage_progress.value(), 0)
+        QTest.mouseClick(window.home_add_candidate_button, Qt.MouseButton.LeftButton)
+        QTest.mouseClick(window.home_add_candidate_button, Qt.MouseButton.LeftButton)
+        self.assertEqual([operation for operation, _ in sent], ["save"])
+        self.assertEqual(window.draft_panel.table.rowCount(), 4)
+        self.assertFalse(window.home_confirm_draft_button.isEnabled())
+        body = sent[0][1]
+        saved = dict(
+            draft_id="home-draft",
+            revision=1,
+            event_seq=1,
+            boot_id="home-boot",
+            state=0,
+            session_id=body["session_id"],
+            input_context_id=body["input_context_id"],
+            source_request_ids=list(body["source_request_ids"]),
+            candidate=body["candidate"],
+            confirmation_token="home-token",
+            summary="A 取货后到 B 放下",
+        )
+        window.receive_draft(dict(operation="save", success=True, draft=saved))
+        self.assertEqual(window.home_draft_status.text(), "草稿已保存，等待确认")
+        self.assertTrue(window.home_confirm_draft_button.isEnabled())
+        self.assertEqual([operation for operation, _ in sent], ["save"])
+        QTest.mouseClick(window.home_confirm_draft_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(sent[-1][0], "confirm")
+        self.assertEqual(sent[-1][1]["confirmation_token"], "home-token")
+        window.receive_draft(
+            dict(
+                operation="confirm",
+                success=True,
+                draft=dict(saved, state=1, event_seq=2),
+            )
+        )
+        self.assertEqual(
+            [operation for operation, _ in sent], ["save", "confirm", "simulate"]
+        )
+        task = dict(
+            task_id="home-task",
+            draft_id="home-draft",
+            draft_revision=1,
+            active=True,
+            failed=False,
+            state=1,
+        )
+        window.receive_record("sim_task", dict(task, progress=0.0, step=""))
+        self.assertEqual(window.stage_progress.value(), 0)
+        window.receive_record(
+            "sim_task", dict(task, progress=0.25, step="2/4 抓取 box_1")
+        )
+        self.assertEqual(window.home_draft_status.text(), "执行中，步骤 2/4")
+        self.assertEqual(window.stage_progress.value(), 25)
+        window.receive_record(
+            "sim_map",
+            {
+                "width": 200,
+                "height": 200,
+                "resolution": 0.05,
+                "origin_x": -5.0,
+                "origin_y": -5.0,
+                "data": [0] * 40000,
+            },
+        )
+        window.receive_record(
+            "sim_odom", {"x": -2.0, "y": 0.0, "speed": 0.35, "angular": 0.0}
+        )
+        old_color = window.map_view.image.pixelColor(180, 300)
+        window.receive_record(
+            "sim_odom", {"x": 2.0, "y": 0.0, "speed": 0.35, "angular": 0.0}
+        )
+        self.assertNotEqual(window.map_view.image.pixelColor(180, 300), old_color)
+        window.receive_record(
+            "sim_task",
+            dict(task, active=False, progress=1.0, state=3, step="4/4 放下 box_1"),
+        )
+        self.assertEqual(window.home_draft_status.text(), "执行完成")
+        self.assertEqual(window.stage_progress.value(), 100)
+        self.assertFalse(window.home_confirm_draft_button.isEnabled())
+        self.assertEqual(window.pages.currentIndex(), window.page_indexes["首页"])
+
+        window.receive_record("parse", dict(parsed, request_id="home-audio-next"))
+        QTest.mouseClick(window.home_add_candidate_button, Qt.MouseButton.LeftButton)
+        next_body = sent[-1][1]
+        next_draft = dict(
+            saved,
+            draft_id="home-draft-next",
+            state=0,
+            source_request_ids=list(next_body["source_request_ids"]),
+        )
+        window.receive_draft(dict(operation="save", success=True, draft=next_draft))
+        self.assertEqual(window.home_draft_status.text(), "草稿已保存，等待确认")
+        window.receive_draft(
+            dict(
+                operation="confirm",
+                success=True,
+                draft=dict(next_draft, state=1, event_seq=2),
+            )
+        )
+        window.receive_record(
+            "sim_task",
+            {
+                "task_id": "",
+                "draft_id": "home-draft-next",
+                "draft_revision": 1,
+                "active": False,
+                "failed": True,
+                "state": 4,
+                "message": "模拟服务尚未就绪",
+            },
+        )
+        self.assertIn("执行失败", window.home_draft_status.text())
+        self.assertEqual(window.stage_progress.value(), 0)
+
+    def test_home_save_failure_retains_steps_and_cannot_confirm(self):
+        self._prepare_home_candidate()
+        window = self.window
+        sent = []
+        window.draft_requested.connect(lambda operation, body: sent.append(operation))
+        QTest.mouseClick(window.home_add_candidate_button, Qt.MouseButton.LeftButton)
+        window.receive_draft(
+            dict(operation="save", success=False, message="资料已更新，请重新核对")
+        )
+        self.assertEqual(window.draft_panel.table.rowCount(), 4)
+        self.assertIn("草稿未保存", window.home_draft_status.text())
+        self.assertIn("资料已更新", window.home_draft_status.text())
+        self.assertFalse(window.home_confirm_draft_button.isEnabled())
+        self.assertEqual(sent, ["save"])
+        QTest.mouseClick(window.home_save_draft_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(sent, ["save", "save"])
+        window.receive_draft(
+            dict(
+                operation="save", success=False, unknown=True, message="保存结果未确认"
+            )
+        )
+        self.assertFalse(window.home_confirm_draft_button.isEnabled())
+        self.assertFalse(window.home_save_draft_button.isEnabled())
+        self.assertEqual(sent, ["save", "save"])
+
+    def test_home_add_preserves_unsaved_manual_steps_and_rejects_incomplete_candidate(
+        self,
+    ):
+        parsed = self._prepare_home_candidate()
+        window = self.window
+        panel = window.draft_panel
+        panel.new()
+        panel.add_blank("NAVIGATE")
+        panel.table.item(0, 2).setText("station_b")
+        window.home_drafts.refresh()
+        self.assertFalse(window.home_add_candidate_button.isEnabled())
+        QTest.mouseClick(window.home_add_candidate_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(panel.steps()[0]["destination_station_id"], "station_b")
+        panel.new()
+        window.receive_record(
+            "parse",
+            dict(
+                parsed,
+                request_id="needs-material",
+                success=False,
+                outcome=1,
+                clarification_question="搬运哪个物料？",
+            ),
+        )
+        self.assertFalse(window.home_add_candidate_button.isEnabled())
+        self.assertFalse(window.home_confirm_draft_button.isEnabled())
 
 
 if __name__ == "__main__":
