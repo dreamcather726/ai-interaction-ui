@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from robot_visualization.runtime.supervisor import BackendSupervisor, ros_command
+from robot_visualization.runtime.console import format_log, log_level
 from robot_visualization.state import RecordStore
 
 
@@ -65,6 +66,35 @@ class StoreTests(unittest.TestCase):
 
 
 class SupervisorRulesTests(unittest.TestCase):
+    def test_log_levels_keep_original_payload_and_all_levels_in_file(self):
+        manager = BackendSupervisor(SimpleNamespace())
+        manager.log_file = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()):
+            manager.emit("operation feedback")
+            manager.emit("queue detail", "DEBUG")
+            manager.emit("model failure", "ERROR")
+        expected = ["[I] operation feedback", "[D] queue detail", "[E] model failure"]
+        self.assertEqual([manager.lines.get_nowait() for _ in expected], expected)
+        self.assertEqual(manager.log_file.getvalue(), "\n".join(expected) + "\n")
+
+    def test_multiline_trace_keeps_summary_visible_and_trace_debug(self):
+        source = 'model failure\nTraceback (most recent call last):\n  File "model.py", line 1\nValueError: invalid checkpoint'
+        result = format_log(source, "ERROR")
+        self.assertEqual(result.splitlines()[0], "[E] model failure")
+        self.assertEqual(
+            result.splitlines()[1], "[D] Traceback (most recent call last):"
+        )
+        self.assertEqual(result.splitlines()[-1], "[E] ValueError: invalid checkpoint")
+        self.assertEqual("\n".join(line[4:] for line in result.splitlines()), source)
+        self.assertEqual(format_log(result), result)
+
+    def test_level_detection_retains_ros_errors_and_user_feedback(self):
+        self.assertEqual(log_level("[ERROR] model failed"), "ERROR")
+        self.assertEqual(log_level("[WARN] warning detail"), "WARNING")
+        self.assertEqual(log_level("[INFO] 音频入队；等待队列 1 条"), "DEBUG")
+        self.assertEqual(log_level("[INFO] 识别完成，请求 r，文字：等待队列"), "INFO")
+        self.assertEqual(log_level("[WARN] 语义推理收尾结束，迟到结果已丢弃"), "DEBUG")
+
     def test_child_output_reaches_console_before_process_exits(self):
         manager = BackendSupervisor(SimpleNamespace())
         output = io.StringIO()

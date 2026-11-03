@@ -22,7 +22,7 @@ from ai_edge.semantic.semantic_contract import (
 from ai_edge.task_drafts.store import plan_summary
 from ai_edge.task_drafts.actions import action_steps, validate_action_plan
 from robot_visualization.task_model import normalize_candidate
-from robot_visualization.runtime.console import console_log
+from robot_visualization.runtime.console import console_log, format_log, log_level
 from robot_visualization.ui.paging import (
     ElidedLabel,
     NoWheel,
@@ -329,6 +329,7 @@ class TaskDraftPanel(QWidget):
 
     def log_edit(self, message):
         text = f"草稿编辑：{message}；共 {self.table.rowCount()} 步"
+        text = format_log(text, log_level(text))
         console_log(text)
         self.log_message.emit(text)
 

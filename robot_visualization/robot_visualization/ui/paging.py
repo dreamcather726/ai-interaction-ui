@@ -1,6 +1,7 @@
 """无滚动展示组件：内容完整保留，使用按钮翻页。"""
 
 import math
+from html import escape
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QTextLayout, QTextOption
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from robot_visualization.runtime.console import log_level
 
 
 class NoWheel(QObject):
@@ -227,6 +229,35 @@ class PagedText(QWidget):
     def showEvent(self, event):
         super().showEvent(event)
         self._reflow()
+
+
+class PagedLog(PagedText):
+    """日志专用着色视图；只渲染转义后的可见页，不引入滚动控件。"""
+
+    COLORS = {
+        "ERROR": "#c85648",
+        "WARNING": "#ac7c23",
+        "INFO": "#29486d",
+        "DEBUG": "#8797ad",
+    }
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.body.setTextFormat(Qt.TextFormat.RichText)
+
+    def _render(self, *args):
+        start = self.pager.page * self._rows
+        fragments = []
+        level = "INFO"
+        for index, line in enumerate(self._lines):
+            if line.startswith(("[D]", "[I]", "[W]", "[E]")):
+                level = log_level(line)
+            if start <= index < start + self._rows:
+                content = escape(line).replace(" ", "&nbsp;") or "&nbsp;"
+                fragments.append(
+                    f'<span style="color:{self.COLORS[level]}">{content}</span>'
+                )
+        self.body.setText("<br/>".join(fragments))
 
 
 class PagedTable(QTableWidget):

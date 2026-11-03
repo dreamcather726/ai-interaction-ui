@@ -16,7 +16,7 @@ try:
         QStackedWidget,
     )
 
-    from robot_visualization.ui.paging import PagedCombo, PagedText
+    from robot_visualization.ui.paging import PagedText
     from ai_edge.common.catalog import seed_catalog
 
     from robot_visualization.ui.window import DashboardWindow
@@ -428,6 +428,42 @@ class WindowTests(unittest.TestCase):
         self.assertIn("待命", self.window.task_badge.text())
         self.assertEqual(self.window.stage_progress.value(), 100)
         self.assertIn("非机器人执行", self.window.stage_progress.format())
+
+    def test_debug_toggle_replays_history_and_errors_never_get_filtered(self):
+        window = self.window
+        self.assertFalse(window.show_debug_checkbox.isChecked())
+        for text in ("[I] ready", "[D] queue=1", "[E] failed", "[W] degraded"):
+            window.append_log(text)
+        self.assertNotIn("queue=1", window.logs.toPlainText())
+        self.assertIn("[E] failed", window.logs.toPlainText())
+        self.assertIn("[W] degraded", window.logs.toPlainText())
+        self.assertEqual(len(window.log_cache), 4)
+        window.show_debug_checkbox.setChecked(True)
+        self.assertIn("queue=1", window.logs.toPlainText())
+        window.show_debug_checkbox.setChecked(False)
+        self.assertNotIn("queue=1", window.logs.toPlainText())
+        self.assertEqual(len(window.log_cache), 4)
+        window.switch_page(window.page_indexes["日志分析"])
+        window.show_debug_checkbox.setChecked(True)
+        self.assertIn("queue=1", window.logs.toPlainText())
+        QTest.mouseClick(window.clear_log_button, Qt.MouseButton.LeftButton)
+        window.show_debug_checkbox.setChecked(False)
+        window.show_debug_checkbox.setChecked(True)
+        self.assertEqual(window.log_cache, [])
+        self.assertEqual(window.logs.toPlainText(), "")
+
+    def test_log_colors_escape_payload_markup_and_color_wrapped_lines(self):
+        window = self.window
+        window.show_debug_checkbox.setChecked(True)
+        window.append_log('[E] <img src="invalid">' + " error" * 10)
+        window.append_log("[D] trace detail")
+        window.append_log("[W] degraded")
+        self.app.processEvents()
+        self.assertIn("&lt;img", window.logs.body.text())
+        self.assertIn("#c85648", window.logs.body.text())
+        self.assertNotIn('<img src="invalid">', window.logs.body.text())
+        self.assertEqual(window.logs.COLORS["DEBUG"], "#8797ad")
+        self.assertEqual(window.logs.COLORS["WARNING"], "#ac7c23")
 
 
 if __name__ == "__main__":

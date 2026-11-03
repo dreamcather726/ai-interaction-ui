@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 from robot_visualization.state import STAGES, RecordStore
 from robot_visualization.ui.theme import STYLE
 from robot_visualization.ui.monitor_layout import build_monitor_layout, move_log_card
+from robot_visualization.runtime.console import format_log, log_level
 from robot_visualization.task_model import normalize_candidate
 from ai_edge.task_drafts.store import plan_summary
 from ai_edge.task_drafts.actions import action_steps
@@ -41,6 +42,7 @@ class DashboardWindow(QMainWindow):
             config, "catalog_snapshot", None
         ) or seed_catalog(config.stations, config.objects)
         self.catalog_panels = {}
+        self.log_cache = []
         self.store = RecordStore(limit=100)
         self.selected_request = None
         self.availability = {}
@@ -118,13 +120,21 @@ class DashboardWindow(QMainWindow):
         for panel in self.catalog_panels.values():
             panel.receive(value)
         if value.get("message"):
-            self.append_log(value["message"])
+            self.append_log(
+                format_log(
+                    value["message"], "INFO" if value.get("success") else "ERROR"
+                )
+            )
 
     @Slot(dict)
     def receive_draft(self, value):
         self.draft_panel.receive(value)
         if value.get("message"):
-            self.append_log(value["message"])
+            self.append_log(
+                format_log(
+                    value["message"], "INFO" if value.get("success") else "ERROR"
+                )
+            )
 
     def refresh_controls(self):
         """服务连接、ASR 就绪、设备待机且无挂起操作时，才允许开始录音。"""
@@ -167,7 +177,12 @@ class DashboardWindow(QMainWindow):
     def control_result(self, value):
         self.control_pending = False
         self.control_message.setText(value.get("message", ""))
-        self.append_log(value.get("message", ""))
+        if value.get("message"):
+            self.append_log(
+                format_log(
+                    value["message"], "INFO" if value.get("success") else "ERROR"
+                )
+            )
         # 成功回执不替代设备的实际录音状态；等待下一次状态广播。
         self.refresh_controls()
 
@@ -335,7 +350,29 @@ class DashboardWindow(QMainWindow):
     @Slot(str)
     def append_log(self, text):
         if text:
-            self.logs.appendPlainText(str(text))
+            normalized = format_log(str(text), log_level(text))
+            lines = normalized.split("\n")
+            self.log_cache.extend(lines)
+            visible = [
+                line
+                for line in lines
+                if self.show_debug_checkbox.isChecked() or not line.startswith("[D]")
+            ]
+            if visible:
+                self.logs.appendPlainText("\n".join(visible))
+
+    @Slot(bool)
+    def filter_logs(self, checked):
+        visible = [
+            line for line in self.log_cache if checked or not line.startswith("[D]")
+        ]
+        # 保留原面板1000行显示上限；完整会话缓存不按级别丢弃历史。
+        self.logs.setPlainText("\n".join(visible[-1000:]))
+
+    @Slot()
+    def clear_logs(self):
+        self.log_cache.clear()
+        self.logs.clear()
 
     def closeEvent(self, event):
         if self.can_close:

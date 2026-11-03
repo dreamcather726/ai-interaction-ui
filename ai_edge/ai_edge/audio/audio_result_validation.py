@@ -2,6 +2,7 @@
 
 from action_msgs.msg import GoalStatus
 
+from ai_edge.common import error_codes as Codes
 from ai_edge.semantic.semantic_contract import (
     SemanticError,
     candidate_payload,
@@ -31,18 +32,20 @@ def validate_asr_result(msg, result):
     )
     if any(getattr(result, f) != getattr(msg, f) for f in fields):
         raise ResultValidationError(
-            "ASR_RESULT_MISMATCH", "ASR 结果的来源标识或录音时间与请求不一致"
+            Codes.ASR_RESULT_MISMATCH, "ASR 结果的来源标识或录音时间与请求不一致"
         )
     times = (result.recognized_at, result.stamp)
     if any(t.sec < 0 or not 0 <= t.nanosec < 10**9 for t in times):
-        raise ResultValidationError("INVALID_ASR_RESULT", "识别结果时间戳格式不正确")
+        raise ResultValidationError(
+            Codes.INVALID_ASR_RESULT, "识别结果时间戳格式不正确"
+        )
     recognized, published = (t.sec * 10**9 + t.nanosec for t in times)
     captured = msg.capture_ended_at.sec * 10**9 + msg.capture_ended_at.nanosec
     if not captured <= recognized <= published or not (
         result.confidence == -1 or 0 <= result.confidence <= 1
     ):
         raise ResultValidationError(
-            "INVALID_ASR_RESULT", "识别结果的时间顺序或置信度不符合约定"
+            Codes.INVALID_ASR_RESULT, "识别结果的时间顺序或置信度不符合约定"
         )
     valid = (
         result.status == RecognizedText.SUCCESS
@@ -61,13 +64,13 @@ def validate_asr_result(msg, result):
             result.status == RecognizedText.FAILED
             or (
                 result.status == RecognizedText.NO_SPEECH
-                and result.error_code == "NO_SPEECH"
+                and result.error_code == Codes.NO_SPEECH
             )
         )
     )
     if not valid and not failed:
         raise ResultValidationError(
-            "INVALID_ASR_RESULT", "ASR 状态、成功标志、文本和错误字段相互矛盾"
+            Codes.INVALID_ASR_RESULT, "ASR 状态、成功标志、文本和错误字段相互矛盾"
         )
     return bool(valid)
 
@@ -89,7 +92,7 @@ def validate_parse_result(msg, wrapped, stations, objects):
     )
     if actual != expected:
         raise ResultValidationError(
-            "PARSE_RESULT_MISMATCH", "语义解析结果与来源输入不一致"
+            Codes.PARSE_RESULT_MISMATCH, "语义解析结果与来源输入不一致"
         )
     ready = (
         wrapped.status == GoalStatus.STATUS_SUCCEEDED
@@ -101,13 +104,13 @@ def validate_parse_result(msg, wrapped, stations, objects):
     )
     if ready and not valid_candidate(result.candidate, stations, objects):
         raise ResultValidationError(
-            "INVALID_MODEL_OUTPUT", "任务候选字段或工位、物料白名单校验未通过"
+            Codes.INVALID_MODEL_OUTPUT, "任务候选字段或工位、物料白名单校验未通过"
         )
     clarification = (
         wrapped.status == GoalStatus.STATUS_SUCCEEDED
         and not result.success
         and result.outcome == ParseTask.Result.NEED_CLARIFICATION
-        and result.error_code == "MISSING_FIELDS"
+        and result.error_code == Codes.MISSING_FIELDS
         and result.missing_fields
         and result.clarification_question.strip()
     )
@@ -117,12 +120,12 @@ def validate_parse_result(msg, wrapped, stations, objects):
                 candidate_payload(result.candidate), stations, objects
             )
         except SemanticError as exc:
-            raise ResultValidationError("INVALID_MODEL_OUTPUT", str(exc)) from exc
+            raise ResultValidationError(Codes.INVALID_MODEL_OUTPUT, str(exc)) from exc
         if checked.unsupported or list(checked.missing_fields) != list(
             result.missing_fields
         ):
             raise ResultValidationError(
-                "INVALID_MODEL_OUTPUT", "追问的缺失字段与候选实际内容不一致"
+                Codes.INVALID_MODEL_OUTPUT, "追问的缺失字段与候选实际内容不一致"
             )
     terminal_failure = (
         not result.success
@@ -141,7 +144,7 @@ def validate_parse_result(msg, wrapped, stations, objects):
     )
     if not result.message.strip() or not (ready or clarification or terminal_failure):
         raise ResultValidationError(
-            "INVALID_MODEL_OUTPUT", "Action 终态与语义解析结果不一致"
+            Codes.INVALID_MODEL_OUTPUT, "Action 终态与语义解析结果不一致"
         )
     return bool(ready)
 

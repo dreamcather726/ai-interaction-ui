@@ -22,6 +22,7 @@ from robot_interfaces.srv import ProcessAudio, QueryAudio, RecognizeAudio
 from robot_visualization.config import DashboardConfig
 from robot_visualization.state import STAGES
 from robot_visualization.ros.drafts import DraftClient
+from robot_visualization.runtime.console import format_log, log_level
 
 
 def payload(message):
@@ -82,7 +83,10 @@ class DashboardNode(Node):
     def on_receipt(self, message):
         tag = "成功" if message.success else message.error_code or "失败"
         self.events.report_log(
-            f"[{message.operation}] {tag} · {message.message} · {message.request_id}"
+            format_log(
+                f"[{message.operation}] {tag} · {message.message} · {message.request_id}",
+                "INFO" if message.success else "ERROR",
+            )
         )
 
     def on_log(self, message):
@@ -95,7 +99,20 @@ class DashboardNode(Node):
             "task_draft_node",
         }
         if message.name in names and message.name not in self.owned_nodes:
-            self.events.report_log(f"[{message.name}] {message.msg}")
+            level = (
+                "ERROR"
+                if message.level >= Log.ERROR
+                else (
+                    "WARNING"
+                    if message.level >= Log.WARN
+                    else "DEBUG" if message.level <= Log.DEBUG else "INFO"
+                )
+            )
+            self.events.report_log(
+                format_log(
+                    f"[{message.name}] {message.msg}", log_level(message.msg, level)
+                )
+            )
 
     def on_state(self, message):
         key = (message.source_node, message.boot_id, message.request_id)
@@ -108,8 +125,15 @@ class DashboardNode(Node):
         self.events.record.emit("state", payload(message))
         stage_name = STAGES.get(message.stage, (str(message.stage), "idle"))[0]
         self.events.report_log(
-            f"音频处理 [{message.request_id}]：{stage_name}；{message.message}"
-            + (f"；错误码={message.error_code}" if message.error_code else "")
+            format_log(
+                f"音频处理 [{message.request_id}]：{stage_name}；{message.message}"
+                + (f"；错误码={message.error_code}" if message.error_code else ""),
+                (
+                    "ERROR"
+                    if message.stage in (7, 9)
+                    else "DEBUG" if message.stage < 5 else "INFO"
+                ),
+            )
         )
         if previous == 0 or message.event_seq > previous + 1 or message.stage >= 5:
             self.request_query(message.request_id)
@@ -119,7 +143,9 @@ class DashboardNode(Node):
             return
         client = self.start_client if operation == "start" else self.stop_client
         if not client.service_is_ready():
-            self.events.report_log(f"录音请求 {operation} 未发送：设备服务尚未发现")
+            self.events.report_log(
+                format_log(f"录音请求 {operation} 未发送：设备服务尚未发现", "ERROR")
+            )
             self.events.control.emit(
                 {"success": False, "message": "录音服务尚未发现，请等待设备连接"}
             )
@@ -180,7 +206,7 @@ class DashboardNode(Node):
             self.publish_availability(now)
 
     def report_error(self, operation, message):
-        self.events.report_log(f"操作 {operation} 失败：{message}")
+        self.events.report_log(format_log(f"操作 {operation} 失败：{message}", "ERROR"))
         if operation != "query":
             self.events.control.emit({"success": False, "message": message})
 

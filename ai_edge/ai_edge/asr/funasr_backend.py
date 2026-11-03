@@ -5,6 +5,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_edge.common import error_codes as Codes
 from ai_edge.asr.model_paths import default_model_path
 
 
@@ -49,7 +50,7 @@ class FunASRBackend:
             checkpoint = self._local_checkpoint(model_dir)
         elif model_dir.is_absolute():
             raise ASRError(
-                "ASR_MODEL_INCOMPLETE",
+                Codes.ASR_MODEL_INCOMPLETE,
                 f"本地模型目录不存在：{model_dir}。请将完整模型放入项目 models/SenseVoiceSmall",
             )
         self.progress("正在导入 FunASR 及其依赖（PyTorch、音频处理库等）……")
@@ -57,7 +58,7 @@ class FunASRBackend:
             from funasr import AutoModel
         except ImportError as exc:
             raise ASRError(
-                "ASR_DEPENDENCY_MISSING", f"当前 Python 无法导入 FunASR：{exc}"
+                Codes.ASR_DEPENDENCY_MISSING, f"当前 Python 无法导入 FunASR：{exc}"
             ) from exc
         try:
             source = "本地模型目录" if checkpoint is not None else "指定模型"
@@ -83,7 +84,7 @@ class FunASRBackend:
                 resolved = getattr(model, "kwargs", {}).get("init_param")
                 if not resolved:
                     raise ASRError(
-                        "ASR_MODEL_INCOMPLETE",
+                        Codes.ASR_MODEL_INCOMPLETE,
                         "FunASR 没有提供已加载的预训练权重路径，模型不能报告就绪",
                     )
                 checkpoint = Path(resolved)
@@ -94,7 +95,7 @@ class FunASRBackend:
             raise
         except Exception as exc:
             raise ASRError(
-                "ASR_MODEL_UNAVAILABLE", f"FunASR 模型加载失败：{exc}"
+                Codes.ASR_MODEL_UNAVAILABLE, f"FunASR 模型加载失败：{exc}"
             ) from exc
 
     def _local_checkpoint(self, model_dir):
@@ -111,7 +112,7 @@ class FunASRBackend:
                     raise ValueError("init_param 必须是非空权重路径")
             except (OSError, ValueError, AttributeError) as exc:
                 raise ASRError(
-                    "ASR_MODEL_UNAVAILABLE", f"模型文件清单无效：{manifest}；{exc}"
+                    Codes.ASR_MODEL_UNAVAILABLE, f"模型文件清单无效：{manifest}；{exc}"
                 ) from exc
         checkpoint = model_dir / checkpoint_name
         self._require_checkpoint(checkpoint)
@@ -123,7 +124,7 @@ class FunASRBackend:
             partial = checkpoint.with_name(checkpoint.name + ".incomplete")
             detail = f"；发现未完成下载：{partial}" if partial.exists() else ""
             raise ASRError(
-                "ASR_MODEL_INCOMPLETE",
+                Codes.ASR_MODEL_INCOMPLETE,
                 f"模型权重缺失或为空：{checkpoint}{detail}。请完成模型下载后重启 ASR",
             )
 
@@ -132,7 +133,7 @@ class FunASRBackend:
         import numpy as np
 
         if self.model is None:
-            raise ASRError("ASR_NOT_READY", "ASR 模型尚未加载完成")
+            raise ASRError(Codes.ASR_NOT_READY, "ASR 模型尚未加载完成")
         samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768.0
         if samples.size == 0 or not np.any(samples):
             return Transcription("")
@@ -151,18 +152,20 @@ class FunASRBackend:
                     use_itn=True,
                 )
                 if not isinstance(part, list):
-                    raise ASRError("INVALID_ASR_RESULT", "FunASR 返回的数据结构不正确")
+                    raise ASRError(
+                        Codes.INVALID_ASR_RESULT, "FunASR 返回的数据结构不正确"
+                    )
                 results.extend(part)
         except Exception as exc:
-            raise ASRError("ASR_FAILED", f"FunASR 推理失败：{exc}") from exc
+            raise ASRError(Codes.ASR_FAILED, f"FunASR 推理失败：{exc}") from exc
         if not isinstance(results, list):
-            raise ASRError("INVALID_ASR_RESULT", "FunASR 返回的数据结构不正确")
+            raise ASRError(Codes.INVALID_ASR_RESULT, "FunASR 返回的数据结构不正确")
         texts = []
         language = ""
         language_map = {"zh": "zh-CN", "en": "en", "yue": "yue", "ja": "ja", "ko": "ko"}
         for item in results:
             if not isinstance(item, dict) or not isinstance(item.get("text"), str):
-                raise ASRError("INVALID_ASR_RESULT", "FunASR 返回结果缺少有效 text")
+                raise ASRError(Codes.INVALID_ASR_RESULT, "FunASR 返回结果缺少有效 text")
             raw = item["text"]
             if "<|nospeech|>" in raw:
                 continue
@@ -177,6 +180,7 @@ class FunASRBackend:
         text = " ".join(texts).strip()
         if len(text) > 16384:
             raise ASRError(
-                "ASR_OUTPUT_TOO_LONG", "识别文字超过 16384 字符，未截断或进入语义解析"
+                Codes.ASR_OUTPUT_TOO_LONG,
+                "识别文字超过 16384 字符，未截断或进入语义解析",
             )
         return Transcription(text, language or language_map.get(self.language, ""))

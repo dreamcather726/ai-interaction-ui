@@ -4,6 +4,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPen
 from PySide6.QtWidgets import (
     QButtonGroup,
+    QCheckBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -19,7 +20,13 @@ from PySide6.QtWidgets import (
 )
 
 from robot_visualization.ui.catalog import CatalogPanel
-from robot_visualization.ui.paging import ElidedLabel, PagedList, PagedText, PageTabs
+from robot_visualization.ui.paging import (
+    ElidedLabel,
+    PagedList,
+    PagedLog,
+    PagedText,
+    PageTabs,
+)
 from robot_visualization.ui.task_drafts import TaskDraftPanel
 from robot_visualization.ui.widgets import Badge, Card, PipelineStrip, glyph, label
 
@@ -332,12 +339,16 @@ def build_logs(window):
     window.query_button.clicked.connect(window.query_record)
     window.clear_log_button = QPushButton("清空显示")
     window.clear_log_button.setObjectName("small")
-    window.logs = PagedText()
+    window.show_debug_checkbox = QCheckBox("显示调试日志")
+    window.show_debug_checkbox.setChecked(False)
+    window.show_debug_checkbox.toggled.connect(window.filter_logs)
+    window.logs = PagedLog()
     window.logs.setMaximumBlockCount(1000)
-    window.clear_log_button.clicked.connect(window.logs.clear)
+    window.clear_log_button.clicked.connect(window.clear_logs)
     card.heading.addWidget(window.query_input, 1)
     card.heading.addWidget(window.query_button)
     card.heading.addWidget(window.clear_log_button)
+    card.body.addWidget(window.show_debug_checkbox)
     row = QHBoxLayout()
     row.addWidget(window.logs, 7)
     source = PagedText(

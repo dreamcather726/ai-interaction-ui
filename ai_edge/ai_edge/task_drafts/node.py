@@ -8,8 +8,9 @@ from rclpy.clock import Clock, ClockType
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 
+from ai_edge.common import error_codes as Codes
 from ai_edge.semantic.ros_candidates import assign_candidate
-from ai_edge.semantic.semantic_contract import SemanticError, candidate_payload
+from ai_edge.semantic.semantic_contract import candidate_payload
 from ai_edge.task_drafts.store import DraftError, DraftStore
 from ai_edge.common.catalog import catalog_ids, node_catalog
 from robot_interfaces.msg import TaskPlanDraft
@@ -85,12 +86,14 @@ class TaskDraftNode(Node):
     def check(self, request):
         now = self.get_clock().now().nanoseconds
         if not request.request_id.strip() or len(request.request_id) > 256:
-            raise DraftError("INVALID_REQUEST", "草稿请求 ID 无效")
+            raise DraftError(Codes.INVALID_REQUEST, "草稿请求 ID 无效")
         if request.stamp.sec < 0 or not 0 <= request.stamp.nanosec < 10**9:
-            raise DraftError("INVALID_REQUEST", "请求时间戳格式不合法")
+            raise DraftError(Codes.INVALID_REQUEST, "请求时间戳格式不合法")
         stamp = request.stamp.sec * 10**9 + request.stamp.nanosec
         if not 0 < stamp <= now + 10**9 or now - stamp > 30 * 10**9:
-            raise DraftError("STALE_REQUEST", "请求时间无效或已超过30秒，请刷新后重试")
+            raise DraftError(
+                Codes.STALE_REQUEST, "请求时间无效或已超过30秒，请刷新后重试"
+            )
         return now
 
     def handle(self, request, response, operation, value):
@@ -112,7 +115,7 @@ class TaskDraftNode(Node):
                 f"草稿 {record['draft_id']} v{record['revision']}：{response.message}"
             )
         except (ValueError, sqlite3.Error, OSError) as exc:
-            response.error_code = getattr(exc, "code", "DRAFT_STORAGE_FAILED")
+            response.error_code = getattr(exc, "code", Codes.DRAFT_STORAGE_FAILED)
             response.message = str(exc)
             self.get_logger().warning(f"草稿操作失败：{response.error_code}，{exc}")
         response.stamp = self.get_clock().now().to_msg()
@@ -159,7 +162,7 @@ class TaskDraftNode(Node):
             ]
             response.success, response.message = True, "已读取草稿记录"
         except (DraftError, sqlite3.Error, OSError) as exc:
-            response.error_code = getattr(exc, "code", "DRAFT_STORAGE_FAILED")
+            response.error_code = getattr(exc, "code", Codes.DRAFT_STORAGE_FAILED)
             response.message = str(exc)
         response.stamp = self.get_clock().now().to_msg()
         return response

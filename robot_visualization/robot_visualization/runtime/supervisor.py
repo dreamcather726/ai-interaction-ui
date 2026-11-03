@@ -16,7 +16,13 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from robot_visualization.runtime.console import console_log
+from robot_visualization.runtime.console import (
+    console_log,
+    format_log,
+    has_log_level,
+    is_exception_line,
+    log_level,
+)
 
 
 def ros_command(package, executable, parameters=None, python=""):
@@ -145,15 +151,20 @@ class BackendSupervisor:
             )
         return plans
 
-    def emit(self, text):
+    def emit(self, text, level="INFO"):
         text = re.sub(r"\x1b\[[0-9;]*m", "", text).strip()
         if not text:
             return
+        text = format_log(text, level)
         console_log(text)
         try:
             self.lines.put_nowait(text)
         except queue.Full:
             pass
+        self.write_log(text)
+
+    def write_log(self, text):
+        """文件始终记录全部级别；不受日志面板开关影响。"""
         with self.log_lock:
             if self.log_file and not self.log_file.closed:
                 self.log_file.write(text + "\n")
@@ -161,7 +172,7 @@ class BackendSupervisor:
 
     def start(self, existing):
         if not self.config.start_backend:
-            self.emit("仅连接模式：不启动或接管已有后端进程")
+            self.emit("仅连接模式：不启动或接管已有后端进程", "INFO")
             return
         folder = Path.home() / ".local/state/ai_interaction"
         folder.mkdir(parents=True, exist_ok=True)
@@ -174,7 +185,7 @@ class BackendSupervisor:
             try:
                 fcntl.flock(self.lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                self.emit("另一工作台已负责启动后端；本窗口只连接已有服务")
+                self.emit("另一工作台已负责启动后端；本窗口只连接已有服务", "INFO")
                 self.lock_file.close()
                 self.lock_file = None
                 return
@@ -182,27 +193,33 @@ class BackendSupervisor:
             folder / f"dashboard_{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}.log"
         ).open("a", encoding="utf-8")
         self.config.audio_root.mkdir(parents=True, exist_ok=True)
-        self.emit(f"本次后台日志文件：{self.log_file.name}")
-        self.emit(f"音频保存目录：{self.config.audio_root}")
+        self.emit(f"本次后台日志文件：{self.log_file.name}", "DEBUG")
+        self.emit(f"音频保存目录：{self.config.audio_root}", "DEBUG")
         self.emit(
-            f"基础资料库：{getattr(self.config, 'catalog_path', 'task_data/catalog.sqlite3')}；外部节点须配置同一绝对路径"
+            f"基础资料库：{getattr(self.config, 'catalog_path', 'task_data/catalog.sqlite3')}；外部节点须配置同一绝对路径",
+            "DEBUG",
         )
-        self.emit(f"ASR Python：{self.config.asr_python}")
-        self.emit(f"ASR 模型：{self.config.model_path}")
-        self.emit(f"语义模型：{self.config.model}；Ollama：{self.config.ollama_url}")
+        self.emit(f"ASR Python：{self.config.asr_python}", "DEBUG")
+        self.emit(f"ASR 模型：{self.config.model_path}", "DEBUG")
+        self.emit(
+            f"语义模型：{self.config.model}；Ollama：{self.config.ollama_url}", "DEBUG"
+        )
         self.emit(
             f"麦克风设备：{self.config.device}；"
-            f"ROS_DOMAIN_ID={os.getenv('ROS_DOMAIN_ID', '0')}"
+            f"ROS_DOMAIN_ID={os.getenv('ROS_DOMAIN_ID', '0')}",
+            "DEBUG",
         )
         self.emit(
-            f"白名单：{len(self.config.stations)} 个工位、{len(self.config.objects)} 个物料"
+            f"白名单：{len(self.config.stations)} 个工位、{len(self.config.objects)} 个物料",
+            "DEBUG",
         )
         self.ensure_ollama()
         for name, command in self.plans():
             if name in existing:
                 self.external_nodes.add(name)
                 self.emit(
-                    f"沿用外部节点：{name}，继续使用原参数；关闭本窗口时保留该进程"
+                    f"沿用外部节点：{name}，继续使用原参数；关闭本窗口时保留该进程",
+                    "INFO",
                 )
             else:
                 self.spawn(name, command)
@@ -210,13 +227,13 @@ class BackendSupervisor:
     def ensure_ollama(self):
         parts = urlsplit(self.config.ollama_url)
         if parts.hostname not in ("localhost", "127.0.0.1"):
-            self.emit("使用外部 Ollama 地址，不启动本地模型服务")
+            self.emit("使用外部 Ollama 地址，不启动本地模型服务", "INFO")
             return
         try:
             with socket.create_connection(
                 (parts.hostname, parts.port or 11434), timeout=0.3
             ):
-                self.emit("Ollama 服务已在线，沿用已安装的模型")
+                self.emit("Ollama 服务已在线，沿用已安装的模型", "INFO")
                 return
         except OSError:
             pass
@@ -227,10 +244,12 @@ class BackendSupervisor:
             )
             self.spawn("ollama", [executable, "serve"], env)
         else:
-            self.emit("未找到 Ollama，语义服务调用时会报告连接失败；请先安装 Ollama")
+            self.emit(
+                "未找到 Ollama，语义服务调用时会报告连接失败；请先安装 Ollama", "ERROR"
+            )
 
     def spawn(self, name, command, env=None):
-        self.emit(f"准备启动 {name}：{shlex.join(command)}")
+        self.emit(f"准备启动 {name}：{shlex.join(command)}", "DEBUG")
         child_env = dict(os.environ if env is None else env)
         child_env.update(PYTHONUNBUFFERED="1", RCUTILS_LOGGING_BUFFERED_STREAM="0")
         launch_command = command
@@ -262,17 +281,30 @@ class BackendSupervisor:
         )
         reader.start()
         self.readers.append(reader)
-        self.emit(f"节点进程已启动：{name}，PID={process.pid}；就绪状态等待后续广播")
+        self.emit(
+            f"节点进程已启动：{name}，PID={process.pid}；就绪状态等待后续广播", "INFO"
+        )
 
     def read_output(self, name, process):
+        traceback_mode = False
         try:
             for line in process.stdout:
-                self.emit(f"[{name}] {line.rstrip()}")
+                if has_log_level(line):
+                    traceback_mode = False
+                if line.lstrip().startswith("Traceback (most recent call last):"):
+                    traceback_mode = True
+                level = "DEBUG" if traceback_mode else log_level(line)
+                if is_exception_line(line):
+                    level = "ERROR"
+                self.emit(f"[{name}] {line.rstrip()}", level)
         finally:
             process.stdout.close()
             code = process.wait()
             reason = "工作台关闭" if self.stopping else "未主动关闭，不自动重启"
-            self.emit(f"节点已退出：{name}，退出码 {code}；{reason}")
+            self.emit(
+                f"节点已退出：{name}，退出码 {code}；{reason}",
+                "INFO" if self.stopping or code == 0 else "ERROR",
+            )
 
     def drain(self):
         for _ in range(100):
@@ -282,7 +314,7 @@ class BackendSupervisor:
                 break
 
     def close(self):
-        self.emit("正在关闭本窗口启动的后台进程……")
+        self.emit("正在关闭本窗口启动的后台进程……", "INFO")
         self.stopping = True
         stages = (
             (
@@ -305,7 +337,9 @@ class BackendSupervisor:
         for sig, timeout in stages:
             live = [p for p in self.children.values() if self.group_is_alive(p)]
             if live:
-                self.emit(f"向 {len(live)} 个后台进程发送 {sig.name}，等待退出")
+                self.emit(
+                    f"向 {len(live)} 个后台进程发送 {sig.name}，等待退出", "DEBUG"
+                )
             for process in live:
                 try:
                     os.killpg(process.pid, sig)
@@ -325,11 +359,11 @@ class BackendSupervisor:
         for reader in self.readers:
             reader.join(timeout=0.2)
         if remaining:
-            self.emit("后台进程仍未完全退出：" + "、".join(remaining))
+            self.emit("后台进程仍未完全退出：" + "、".join(remaining), "ERROR")
         else:
-            self.emit("本窗口创建的后台进程组已全部退出")
+            self.emit("本窗口创建的后台进程组已全部退出", "INFO")
         if self.external_nodes:
-            self.emit("保留外部节点：" + "、".join(sorted(self.external_nodes)))
+            self.emit("保留外部节点：" + "、".join(sorted(self.external_nodes)), "INFO")
         with self.log_lock:
             if self.log_file:
                 self.log_file.close()

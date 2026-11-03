@@ -10,7 +10,7 @@ from PySide6.QtCore import QThread, Signal
 from rclpy.executors import SingleThreadedExecutor
 
 from robot_visualization.ros.node import DashboardNode
-from robot_visualization.runtime.console import console_log
+from robot_visualization.runtime.console import console_log, format_log, log_level
 from robot_visualization.runtime.supervisor import BackendSupervisor
 
 
@@ -34,8 +34,10 @@ class RosWorker(QThread):
         self.catalog_error = ""
 
     def report_log(self, message):
+        message = format_log(message, log_level(message))
         console_log(message)
         self.log.emit(message)
+        self.manager.write_log(message)
 
     def command(self, operation, value=""):
         try:
@@ -137,7 +139,11 @@ class RosWorker(QThread):
                 for line in self.manager.drain():
                     self.log.emit(line)
         except Exception as exc:
-            self.report_log(f"工作台后端异常：{exc}\n{traceback.format_exc()}")
+            self.report_log(
+                format_log(f"工作台后端异常：{exc}", "ERROR")
+                + "\n"
+                + format_log(traceback.format_exc(), "DEBUG")
+            )
         finally:
             self.cleanup(executor)
 

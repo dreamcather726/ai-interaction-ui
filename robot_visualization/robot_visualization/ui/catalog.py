@@ -1,6 +1,6 @@
 """分页维护基础资料，异步保存，不在界面内创建表格行内编辑器。"""
 
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Signal, Slot
 from PySide6.QtWidgets import (
     QCheckBox,
     QFormLayout,
