@@ -59,6 +59,11 @@ class DashboardWindow(QMainWindow):
         self.resize(min(1440, width), min(900, height))
         self.setStyleSheet(STYLE)
         self.build_ui()
+        self.simulation_view = None
+        if getattr(config, "use_simulator", False):
+            from robot_visualization.ui.simulation import SimulationView
+
+            self.simulation_view = SimulationView(self)
         self.refresh_controls()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
@@ -97,6 +102,9 @@ class DashboardWindow(QMainWindow):
         self.time_label.setToolTip("北京时间 · Asia/Shanghai")
 
     def refresh_task_badge(self):
+        if self.simulation_view is not None and self.simulation_view.task:
+            self.simulation_view.render_task()
+            return
         active = any(
             record.get("state", {}).get("stage") in (0, 1, 2, 3, 4)
             for record in self.store.records.values()
@@ -129,6 +137,13 @@ class DashboardWindow(QMainWindow):
     @Slot(dict)
     def receive_draft(self, value):
         self.draft_panel.receive(value)
+        if (
+            self.simulation_view is not None
+            and value.get("operation") == "confirm"
+            and value.get("success")
+            and value.get("draft", {}).get("state") == 1
+        ):
+            self.draft_requested.emit("simulate", value["draft"])
         if value.get("message"):
             self.append_log(
                 format_log(
@@ -231,6 +246,9 @@ class DashboardWindow(QMainWindow):
 
     @Slot(str, dict)
     def receive_record(self, kind, value):
+        if self.simulation_view is not None and kind.startswith("sim_"):
+            self.simulation_view.receive(kind, value)
+            return
         request_id = value.get("request_id")
         is_new = request_id not in self.store.records
         if not self.store.apply(kind, value):
@@ -287,6 +305,8 @@ class DashboardWindow(QMainWindow):
         self._show_candidate(parsed)
         self.draft_panel.set_candidate(parsed)
         self._show_result_details(state, parsed)
+        if self.simulation_view is not None and self.simulation_view.task:
+            self.simulation_view.render_task()
 
     def _show_candidate(self, parsed):
         """展示单任务或有序步骤；草稿编辑独立于识别历史。"""

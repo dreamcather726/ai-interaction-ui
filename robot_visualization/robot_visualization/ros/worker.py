@@ -128,6 +128,14 @@ class RosWorker(QThread):
                     )
                     if operation.startswith("catalog_"):
                         self.catalog_command(operation.removeprefix("catalog_"), value)
+                    elif self.node.simulation is not None and operation in (
+                        "draft_simulate",
+                        "draft_simulation_cancel",
+                    ):
+                        if operation == "draft_simulate":
+                            self.node.simulation.execute(value)
+                        else:
+                            self.node.simulation.cancel()
                     elif operation.startswith("draft_"):
                         self.node.drafts.send(operation.removeprefix("draft_"), value)
                     elif operation == "query":

@@ -37,8 +37,18 @@ class DashboardNode(Node):
         super().__init__(f"voice_dashboard_{os.getpid()}")
         self.events = events
         self.config = DashboardConfig.from_node(self)
-        self.start_client = self.create_client(Trigger, "/audio/start_recording")
-        self.stop_client = self.create_client(Trigger, "/audio/stop_recording")
+        self.simulation = None
+        if self.config.use_simulator:
+            from robot_visualization.ros.simulation import SimulationClient
+
+            self.simulation = SimulationClient(self, events)
+        audio_namespace = "/simulator/audio" if self.config.use_simulator else "/audio"
+        self.start_client = self.create_client(
+            Trigger, audio_namespace + "/start_recording"
+        )
+        self.stop_client = self.create_client(
+            Trigger, audio_namespace + "/stop_recording"
+        )
         self.query_client = self.create_client(QueryAudio, "/ai/query_audio")
         self.asr_client = self.create_client(RecognizeAudio, "/ai/recognize_audio")
         self.process_client = self.create_client(ProcessAudio, "/ai/process_audio")
@@ -77,6 +87,12 @@ class DashboardNode(Node):
         ]
 
     def on_component(self, message):
+        if (
+            self.config.use_simulator
+            and message.component_id == "microphone"
+            and message.source_node.rsplit("/", 1)[-1] != "fake_microphone_sender"
+        ):
+            return
         if message.component_id in ("asr", "microphone", "parser"):
             self.components[message.component_id] = (message, time.monotonic())
 
@@ -175,6 +191,8 @@ class DashboardNode(Node):
         )
 
     def poll(self):
+        if self.simulation is not None:
+            self.simulation.poll()
         self.drafts.poll()
         now = time.monotonic()
         for key, (client, future, deadline, operation) in list(self.pending.items()):
@@ -336,6 +354,8 @@ class DashboardNode(Node):
             self.events.report_log(message)
 
     def close(self):
+        if self.simulation is not None:
+            self.simulation.close()
         self.drafts.close()
         for client, future, _, _ in self.pending.values():
             client.remove_pending_request(future)

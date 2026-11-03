@@ -158,6 +158,40 @@ class SupervisorRulesTests(unittest.TestCase):
         args = plans["audio_processing_node"]
         self.assertFalse(any("allowed_station_ids" in item for item in args))
 
+    def test_simulation_is_opt_in_and_replaces_only_hardware_microphone(self):
+        config = SimpleNamespace(
+            audio_root=Path("/tmp/audio"),
+            model_path="model",
+            asr_python="/usr/bin/python3",
+            model="qwen3.5:2b",
+            ollama_url="http://127.0.0.1:11434",
+            stations=[],
+            objects=[],
+            start_microphone=True,
+        )
+        real = dict(BackendSupervisor(config).plans())
+        self.assertIn("microphone_sender_node", real)
+        self.assertNotIn("robot_simulator", real)
+        config.use_simulator = True
+        simulated = dict(BackendSupervisor(config).plans())
+        self.assertNotIn("microphone_sender_node", simulated)
+        self.assertEqual(
+            simulated["robot_simulator"],
+            ["ros2", "launch", "robot_simulator", "simulator_all.launch.py"],
+        )
+        for name in (
+            "asr_node",
+            "parse_task_node",
+            "audio_processing_node",
+            "audio_receiver_node",
+            "task_draft_node",
+        ):
+            self.assertEqual(real[name], simulated[name])
+        config.simulator_audio_file = "/tmp/recording.wav"
+        replay = dict(BackendSupervisor(config).plans())
+        self.assertIn("fake_microphone_sender", replay)
+        self.assertNotIn("microphone_sender_node", replay)
+
 
 if __name__ == "__main__":
     unittest.main()

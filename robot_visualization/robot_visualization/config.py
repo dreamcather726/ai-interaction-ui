@@ -25,6 +25,8 @@ class DashboardConfig:
     max_recording_seconds: float = 120.0
     catalog_path: Path = Path("task_data/catalog.sqlite3")
     catalog_snapshot: dict = field(default_factory=dict)
+    use_simulator: bool = False
+    simulator_audio_file: str = ""
 
     @classmethod
     def from_node(cls, node):
@@ -43,6 +45,8 @@ class DashboardConfig:
             "start_microphone": True,
             "max_recording_seconds": 120.0,
             "catalog_path": "task_data/catalog.sqlite3",
+            "use_simulator": False,
+            "simulator_audio_file": "",
         }
         for name, value in defaults.items():
             node.declare_parameter(name, value)
@@ -72,4 +76,6 @@ class DashboardConfig:
             max_recording_seconds=node.get_parameter("max_recording_seconds").value,
             catalog_path=catalog.path,
             catalog_snapshot=snapshot,
+            use_simulator=node.get_parameter("use_simulator").value,
+            simulator_audio_file=node.get_parameter("simulator_audio_file").value,
         )

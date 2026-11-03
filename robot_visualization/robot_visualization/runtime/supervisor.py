@@ -133,7 +133,31 @@ class BackendSupervisor:
         plans.append(
             ("task_draft_node", ros_command("ai_edge", "task_draft_node", draft_params))
         )
-        if c.start_microphone:
+        if getattr(c, "use_simulator", False):
+            plans.append(
+                (
+                    "robot_simulator",
+                    ["ros2", "launch", "robot_simulator", "simulator_all.launch.py"],
+                )
+            )
+            audio_file = getattr(c, "simulator_audio_file", "")
+            if audio_file:
+                plans.append(
+                    (
+                        "fake_microphone_sender",
+                        ros_command(
+                            "robot_simulator",
+                            "fake_microphone_sender",
+                            {
+                                "wav_file": str(
+                                    Path(audio_file).expanduser().resolve()
+                                ),
+                                "auto_play": False,
+                            },
+                        ),
+                    )
+                )
+        elif c.start_microphone:
             plans.append(
                 (
                     "microphone_sender_node",
@@ -215,6 +239,24 @@ class BackendSupervisor:
         )
         self.ensure_ollama()
         for name, command in self.plans():
+            if name == "robot_simulator":
+                simulated = {
+                    "map_simulator_node",
+                    "camera_simulator_node",
+                    "robot_state_simulator_node",
+                    "execute_task_action_server",
+                    "play_audio_action_server",
+                }
+                present = simulated & existing
+                if present:
+                    self.external_nodes.update(present)
+                    self.emit("沿用外部模拟节点：" + "、".join(sorted(present)), "INFO")
+                    if present != simulated:
+                        self.emit(
+                            "模拟节点未成套启动，请先关闭残留模拟节点，或补齐 simulator_all；本窗口不重复启动",
+                            "ERROR",
+                        )
+                    continue
             if name in existing:
                 self.external_nodes.add(name)
                 self.emit(

@@ -199,7 +199,13 @@ def build_home(window):
 def build_map(window):
     card = compact_card("SLAM 地图 / 机器人定位")
     icon_heading(window, card, QStyle.StandardPixmap.SP_DirIcon)
-    view = MapPlaceholder("地图模块待接入")
+    if getattr(window.config, "use_simulator", False):
+        from robot_visualization.ui.simulation import SimulationImage
+
+        view = SimulationImage("等待 SIM 地图")
+    else:
+        view = MapPlaceholder("地图模块待接入")
+    window.map_view = view
     view.setObjectName("mapPlaceholder")
     view.setAlignment(Qt.AlignmentFlag.AlignCenter)
     view.setMinimumHeight(50)
@@ -224,7 +230,13 @@ def build_camera(window):
     collapse.setObjectName("small")
     collapse.setEnabled(False)
     card.heading.addWidget(collapse)
-    video = label("相机模块待接入")
+    if getattr(window.config, "use_simulator", False):
+        from robot_visualization.ui.simulation import SimulationImage
+
+        video = SimulationImage("等待 SIM 相机")
+    else:
+        video = label("相机模块待接入")
+    window.camera_view = video
     video.setObjectName("videoPlaceholder")
     video.setAlignment(Qt.AlignmentFlag.AlignCenter)
     video.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
@@ -286,15 +298,24 @@ def build_commands(window):
 
 def build_progress(window):
     card = compact_card("任务流程 / 执行进度")
-    # 六步仅表示将来接入的机器人流程，不能把 ASR stage 冒充底盘／机械臂状态。
-    card.body.addWidget(label("机器人动作流程（待接入）", "muted"))
-    card.body.addWidget(
-        label(
-            "待命 → 导航至 A 点 → 识别目标 → 机械臂抓取 → 导航至 B 点 → 放置完成",
-            "muted",
-            True,
+    if getattr(window.config, "use_simulator", False):
+        window.cancel_simulation_button = QPushButton("取消模拟执行")
+        window.cancel_simulation_button.setEnabled(False)
+        card.heading.addWidget(window.cancel_simulation_button)
+        window.simulation_step_label = label(
+            "SIM 等待已确认草稿；动作数量随草稿变化", "muted", True
         )
-    )
+        card.body.addWidget(window.simulation_step_label)
+    else:
+        # 六步仅表示将来接入的机器人流程，不能把 ASR stage 冒充底盘／机械臂状态。
+        card.body.addWidget(label("机器人动作流程（待接入）", "muted"))
+        card.body.addWidget(
+            label(
+                "待命 → 导航至 A 点 → 识别目标 → 机械臂抓取 → 导航至 B 点 → 放置完成",
+                "muted",
+                True,
+            )
+        )
     card.body.addWidget(label("当前语音处理流程", "section"))
     window.pipeline = PipelineStrip()
     card.body.addWidget(window.pipeline)
@@ -312,9 +333,10 @@ def build_progress(window):
     )
     current.body.addWidget(window.file_label)
     info = compact_card("任务信息")
-    info.body.addWidget(
-        label("任务 ID：待接入\n开始时间：待接入\n预计完成：待接入", "muted", True)
+    window.task_information = label(
+        "任务 ID：待接入\n开始时间：待接入\n预计完成：待接入", "muted", True
     )
+    info.body.addWidget(window.task_information)
     info.body.addStretch()
     details.addWidget(current, 3)
     details.addWidget(info, 2)
@@ -430,13 +452,17 @@ def build_sidebar(window):
         card.setStyleSheet("QLabel#muted { font-size: 11px; }")
         return card
 
+    window.hardware_labels = {}
     for title, text in (
         ("机器人状态", "当前位置 / 线速度 / 角速度 / 运行模式：待接入"),
         ("底盘状态", "运动状态 / 速度 / 转向角：待接入"),
         ("电池电量", "电量 / 电压 / 续航：待接入"),
         ("网络连接", "Wi-Fi / IP / 延迟：待接入"),
     ):
-        layout.addWidget(sidebar_card(placeholder(title, text)))
+        card = sidebar_card(compact_card(title))
+        window.hardware_labels[title] = label(text, "muted", True)
+        card.body.addWidget(window.hardware_labels[title])
+        layout.addWidget(card)
     services = sidebar_card(compact_card("服务状态"))
     window.service_badges = {}
     for name, title in (
@@ -457,11 +483,12 @@ def build_sidebar(window):
         row.addWidget(badge)
         services.body.addLayout(row)
     layout.addWidget(services)
-    layout.addWidget(
-        sidebar_card(
-            placeholder("当前任务", "任务状态 / 类型 / 目标 / 任务 ID：待接入")
-        )
+    current_task = sidebar_card(compact_card("当前任务"))
+    window.hardware_labels["当前任务"] = label(
+        "任务状态 / 类型 / 目标 / 任务 ID：待接入", "muted", True
     )
+    current_task.body.addWidget(window.hardware_labels["当前任务"])
+    layout.addWidget(current_task)
     layout.addStretch()
     return sidebar
 

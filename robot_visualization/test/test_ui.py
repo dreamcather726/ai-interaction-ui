@@ -465,6 +465,64 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(window.logs.COLORS["DEBUG"], "#8797ad")
         self.assertEqual(window.logs.COLORS["WARNING"], "#ac7c23")
 
+    def test_simulation_renders_telemetry_without_creating_audio_history(self):
+        config = SimpleNamespace(**vars(self.window.config), use_simulator=True)
+        self.window.can_close = True
+        self.window.close()
+        self.window = DashboardWindow(config)
+        window = self.window
+        window.show()
+        self.app.processEvents()
+        window.receive_record(
+            "sim_camera", {"width": 2, "height": 2, "step": 6, "data": bytes(range(12))}
+        )
+        window.receive_record(
+            "sim_map",
+            {
+                "width": 4,
+                "height": 4,
+                "resolution": 0.05,
+                "origin_x": -5.0,
+                "origin_y": -5.0,
+                "data": [0] * 16,
+            },
+        )
+        window.receive_record(
+            "sim_odom", {"x": -2.0, "y": 0.0, "speed": 0.35, "angular": 0.0}
+        )
+        window.receive_record("sim_battery", {"percentage": 0.82, "voltage": 24.2})
+        self.assertFalse(window.camera_view.image.isNull())
+        self.assertFalse(window.map_view.image.isNull())
+        self.assertIn("82%", window.hardware_labels["电池电量"].text())
+        self.assertEqual(window.history.count(), 0)
+        window.receive_record(
+            "sim_task",
+            {
+                "task_id": "sim-one",
+                "progress": 0.25,
+                "active": True,
+                "step": "2/4 抓取 box_1",
+                "message": "模拟抓取",
+            },
+        )
+        self.assertEqual(window.stage_progress.value(), 25)
+        sent = []
+        window.draft_requested.connect(lambda operation, _: sent.append(operation))
+        QTest.mouseClick(window.cancel_simulation_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(sent, ["simulation_cancel"])
+        window.receive_record(
+            "sim_task",
+            {
+                "task_id": "sim-one",
+                "progress": 0.25,
+                "active": False,
+                "failed": True,
+                "message": "模拟执行已取消",
+            },
+        )
+        self.assertEqual(window.stage_progress.value(), 25)
+        self.assertFalse(window.cancel_simulation_button.isEnabled())
+
 
 if __name__ == "__main__":
     unittest.main()
