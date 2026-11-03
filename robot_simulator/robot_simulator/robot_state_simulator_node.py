@@ -16,7 +16,7 @@ from robot_simulator.scene import STATIONS, patrol
 
 class RobotStateSimulator(Node):
     def __init__(self):
-        super().__init__("robot_state_simulator_node")
+        super().__init__("robot_state_node")
         self.declare_parameter("battery_drain_seconds", 3600.0)
         self.drain_seconds = self.get_parameter("battery_drain_seconds").value
         if self.drain_seconds <= 0:

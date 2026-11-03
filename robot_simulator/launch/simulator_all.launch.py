@@ -23,11 +23,12 @@ def generate_launch_description():
         )
     }
     nodes = []
-    for executable, parameters in (
-        ("map_simulator_node", {}),
-        ("camera_simulator_node", camera),
-        ("robot_state_simulator_node", {}),
+    for executable, node_name, parameters in (
+        ("map_simulator_node", "map_node", {}),
+        ("camera_simulator_node", "camera_node", camera),
+        ("robot_state_simulator_node", "robot_state_node", {}),
         (
+            "execute_task_action_server",
             "execute_task_action_server",
             {
                 "step_seconds": ParameterValue(
@@ -35,13 +36,13 @@ def generate_launch_description():
                 )
             },
         ),
-        ("play_audio_action_server", {}),
+        ("play_audio_action_server", "play_audio_action_server", {}),
     ):
         nodes.append(
             Node(
                 package="robot_simulator",
                 executable=executable,
-                name=executable,
+                name=node_name,
                 output="screen",
                 parameters=[parameters],
             )
