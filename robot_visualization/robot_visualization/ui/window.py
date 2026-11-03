@@ -2,35 +2,30 @@
 
 import json
 import time
+from datetime import datetime, timedelta, timezone
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QHBoxLayout,
-    QLineEdit,
     QListWidgetItem,
     QMainWindow,
-    QPushButton,
-    QVBoxLayout,
-    QWidget,
 )
 
 from robot_visualization.state import STAGES, RecordStore
 from robot_visualization.ui.theme import STYLE
-from robot_visualization.ui.widgets import Badge, Card, PipelineStrip, glyph, label
-from robot_visualization.ui.task_drafts import TaskDraftPanel
-from robot_visualization.ui.paging import ElidedLabel, PagedList, PagedText, PageTabs
+from robot_visualization.ui.monitor_layout import build_monitor_layout, move_log_card
 from robot_visualization.task_model import normalize_candidate
 from ai_edge.task_drafts.store import plan_summary
 from ai_edge.task_drafts.actions import action_steps
 from ai_edge.common.catalog import catalog_ids, seed_catalog
-from robot_visualization.ui.catalog import CatalogPanel
 
 
 class DashboardWindow(QMainWindow):
     """Qt 展示与交互层；模型加载、ROS 通信和进程管理由后台负责。"""
 
-    LAYOUT_DESCRIPTION = "分页版，八个独立页面；含工位管理与物料管理，主窗口没有滚动区"
+    LAYOUT_DESCRIPTION = (
+        "三栏监控工作台：顶部栏、左侧导航、首页双列内容、右侧状态栏；无主窗口滚动区"
+    )
 
     start_requested = Signal()
     stop_requested = Signal()
@@ -53,19 +48,23 @@ class DashboardWindow(QMainWindow):
         self.recording_since = None
         self.can_close = False
         self.closing = False
-        self.setWindowTitle("AI 语音交互工作台 · 分页版")
-        # Qt 使用屏幕逻辑像素；为标题栏和窗口边框预留空间，避免 840 高度超出屏幕。
+        self.setWindowTitle("机器人可视化与监控平台 · 三栏监控版")
+        # 默认1440×900；较小屏幕为标题栏和边框预留空间。
         available = self.screen().availableGeometry()
         width = max(1, available.width() - 32)
         height = max(1, available.height() - 48)
-        self.setMinimumSize(min(880, width), min(620, height))
-        self.resize(min(1240, width), min(840, height))
+        self.setMinimumSize(min(1200, width), min(720, height))
+        self.resize(min(1440, width), min(900, height))
         self.setStyleSheet(STYLE)
         self.build_ui()
         self.refresh_controls()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.tick)
         self.timer.start(200)
+        self.clock_timer = QTimer(self)
+        self.clock_timer.timeout.connect(self.update_clock)
+        self.clock_timer.start(1000)
+        self.update_clock()
         self.shortcuts = []
         for key, callback in (
             ("Alt+R", self.start_recording),
@@ -76,177 +75,34 @@ class DashboardWindow(QMainWindow):
             self.shortcuts.append(shortcut)
 
     def build_ui(self):
-        """组合页面结构；各区域的控件在独立方法中创建。"""
-        canvas = QWidget()
-        canvas.setObjectName("canvas")
-        self.setCentralWidget(canvas)
-        layout = QVBoxLayout(canvas)
-        layout.setContentsMargins(18, 12, 18, 12)
-        layout.setSpacing(10)
-        layout.addLayout(self._build_header())
-        layout.addWidget(self._build_content())
+        build_monitor_layout(self)
 
-    def _build_header(self):
-        """创建页面标题与 AI 编排连接标记。"""
-        header = QHBoxLayout()
-        heading = QVBoxLayout()
-        heading.addWidget(label("AI 语音交互工作台", "title"))
-        heading.addWidget(
-            label("分页版 · 点击页签切换功能，长内容使用上一页／下一页", "subtitle")
+    @Slot(int)
+    def switch_page(self, index):
+        self.pages.setCurrentIndex(index)
+
+    @Slot(int)
+    def page_changed(self, index):
+        button = self.navigation.button(index)
+        if button is not None:
+            button.setChecked(True)
+        move_log_card(self, index)
+
+    @Slot()
+    def update_clock(self):
+        current = datetime.now(timezone(timedelta(hours=8)))
+        self.time_label.setText(current.strftime("%Y-%m-%d\n%H:%M:%S"))
+        self.time_label.setToolTip("北京时间 · Asia/Shanghai")
+
+    def refresh_task_badge(self):
+        active = any(
+            record.get("state", {}).get("stage") in (0, 1, 2, 3, 4)
+            for record in self.store.records.values()
         )
-        header.addLayout(heading)
-        header.addStretch()
-        self.connection_badge = Badge()
-        header.addWidget(self.connection_badge)
-        return header
-
-    def _build_content(self):
-        """固定页面切换；列表与文本各自分页，不使用外层滚动区域。"""
-        self.pages = PageTabs()
-        for title, build in (
-            ("语音输入", self._build_recording_card),
-            ("识别结果", self._build_result_card),
-            ("任务草稿", self._build_draft_card),
-            ("历史记录", self._build_history_card),
-            ("服务状态", self._build_service_card),
-            ("运行日志", self._build_log_card),
-            ("工位管理", lambda: self._build_catalog_card("stations", "工位管理")),
-            ("物料管理", lambda: self._build_catalog_card("objects", "物料管理")),
-        ):
-            self.pages.addTab(build(), title)
-        return self.pages
-
-    def _build_recording_card(self):
-        """创建录音提示、状态标签和开始／停止按钮。"""
-        recording = Card(
-            "语音输入",
-            f"说完后停止并识别；单段最长 {getattr(self.config, 'max_recording_seconds', 120.0):g} 秒，可分段录音加入同一草稿。",
+        self.task_badge.update_status(
+            "● 任务状态 · 处理中" if active else "● 任务状态 · 待命",
+            "warn" if active else "good",
         )
-        self.capture_badge = Badge("设备状态未确认")
-        recording.heading.addWidget(self.capture_badge)
-        icon = label()
-        icon.setPixmap(glyph("microphone", 64))
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        recording.body.addWidget(icon)
-        self.recording_label = label("等待麦克风与模型连接", "hero", True)
-        self.recording_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        recording.body.addWidget(self.recording_label)
-        self.capture_hint = PagedText("录音状态以设备广播为准")
-        recording.body.addWidget(self.capture_hint, 1)
-        controls = QHBoxLayout()
-        self.start_button = QPushButton("开始录音  Alt+R")
-        self.start_button.setObjectName("primary")
-        self.start_button.clicked.connect(self.start_recording)
-        self.stop_button = QPushButton("停止并识别  Alt+S")
-        self.stop_button.setObjectName("stop")
-        self.stop_button.clicked.connect(self.stop_recording)
-        controls.addWidget(self.start_button)
-        controls.addWidget(self.stop_button)
-        recording.body.addLayout(controls)
-        self.control_message = PagedText()
-        recording.body.addWidget(self.control_message, 1)
-        return recording
-
-    def _build_service_card(self):
-        """创建麦克风、ASR 等服务状态与当前配置展示。"""
-        services = Card("服务状态", "状态来自服务发现与设备广播。")
-        self.service_badges = {}
-        for name, title in (
-            ("microphone", "麦克风"),
-            ("receiver", "音频接收"),
-            ("asr", "语音识别"),
-            ("parser", "语义解析"),
-            ("processor", "AI 编排"),
-            ("drafts", "任务草稿"),
-        ):
-            row = QHBoxLayout()
-            row.addWidget(label(title))
-            row.addStretch()
-            badge = Badge()
-            self.service_badges[name] = badge
-            row.addWidget(badge)
-            services.body.addLayout(row)
-        stations = "、".join(self.config.stations) or "未配置"
-        objects = "、".join(self.config.objects) or "未配置"
-        self.catalog_details = PagedText(
-            f"语义模型：{self.config.model}\n工位：{stations}\n物料：{objects}"
-        )
-        services.body.addWidget(self.catalog_details, 1)
-        return services
-
-    def _build_result_card(self):
-        """创建处理阶段、识别文字、任务候选及结果文件展示。"""
-        results = Card("识别与任务候选", "候选结果仍需经过任务准备和用户确认。")
-        self.stage_badge = Badge("等待音频")
-        results.heading.addWidget(self.stage_badge)
-        self.pipeline = PipelineStrip()
-        results.body.addWidget(self.pipeline)
-        self.request_label = ElidedLabel("尚无处理记录")
-        results.body.addWidget(self.request_label)
-        self.result_pages = PageTabs()
-        self.asr_text = PagedText()
-        self.candidate_text = PagedText()
-        self.result_message = PagedText()
-        self.result_pages.addTab(self.asr_text, "识别文字")
-        self.result_pages.addTab(self.candidate_text, "动作预览")
-        self.result_pages.addTab(self.result_message, "处理详情")
-        results.body.addWidget(self.result_pages, 1)
-        self.dialogue_hint = ElidedLabel()
-        self.dialogue_hint.hide()
-        results.body.addWidget(self.dialogue_hint)
-        self.file_label = ElidedLabel(f"音频目录：{self.config.audio_root}")
-        self.file_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-        )
-        results.body.addWidget(self.file_label)
-        return results
-
-    def _build_history_card(self):
-        """创建历史记录选择与按请求 ID 查询入口。"""
-        history = Card("最近记录", "按请求 ID 查看已有结果；最多保留 100 条。")
-        self.history = PagedList()
-        self.history.currentItemChanged.connect(self.select_record)
-        history.body.addWidget(self.history, 1)
-        history.body.addWidget(self.history.pager)
-        query_row = QHBoxLayout()
-        self.query_input = QLineEdit()
-        self.query_input.setPlaceholderText("输入原始音频 request_id")
-        self.query_input.returnPressed.connect(self.query_record)
-        self.query_button = QPushButton("查询已有记录")
-        self.query_button.clicked.connect(self.query_record)
-        query_row.addWidget(self.query_input)
-        query_row.addWidget(self.query_button)
-        history.body.addLayout(query_row)
-        return history
-
-    def _build_log_card(self):
-        """创建有行数上限的运行日志及清空显示按钮。"""
-        logs = Card("运行日志")
-        clear = QPushButton("清空显示")
-        clear.setObjectName("small")
-        self.logs = PagedText()
-        self.logs.setMaximumBlockCount(1000)
-        clear.clicked.connect(self.logs.clear)
-        logs.heading.addWidget(clear)
-        logs.body.addWidget(self.logs, 1)
-        return logs
-
-    def _build_draft_card(self):
-        card = Card("任务草稿与确认", "按实际顺序增删步骤，保存后逐步核对并确认。")
-        self.draft_panel = TaskDraftPanel(self.config)
-        self.draft_panel.set_catalog(self.catalog_snapshot)
-        self.draft_panel.command_requested.connect(self.draft_requested.emit)
-        self.draft_panel.log_message.connect(self.append_log)
-        card.body.addWidget(self.draft_panel, 1)
-        return card
-
-    def _build_catalog_card(self, kind, title):
-        card = Card(title, "维护实际ID、名称和语音别名；停用或删除后新任务不能再引用。")
-        panel = CatalogPanel(kind, self.catalog_snapshot)
-        panel.command_requested.connect(self.catalog_requested.emit)
-        self.catalog_panels[kind] = panel
-        card.body.addWidget(panel, 1)
-        return card
 
     @Slot(dict)
     def receive_catalog(self, value):
@@ -370,6 +226,7 @@ class DashboardWindow(QMainWindow):
             self.selected_request = next(reversed(self.store.records), None)
         self.refresh_history()
         self.show_record()
+        self.refresh_task_badge()
 
     def refresh_history(self):
         self.history.blockSignals(True)
@@ -407,6 +264,9 @@ class DashboardWindow(QMainWindow):
             stage in (5, 6, 10),
             state.get("error_code", ""),
         )
+        # 只是已有语音处理阶段的示意值，不代表底盘／机械臂执行进度。
+        progress = {0: 0, 1: 15, 2: 35, 3: 55, 4: 75, 5: 100, 6: 100, 10: 100}
+        self.stage_progress.setValue(progress.get(stage, 0))
         self.request_label.setText(f"请求：{self.selected_request or '—'}")
         self.asr_text.setPlainText(asr.get("text", ""))
         self._show_candidate(parsed)
@@ -449,7 +309,7 @@ class DashboardWindow(QMainWindow):
             )
         elif parsed.get("outcome") == 0 and parsed.get("success"):
             self.dialogue_hint.setText(
-                "候选信息已完整，可到任务草稿页加入候选并逐步核对；尚未执行。"
+                "候选信息已完整，可到左侧任务管理加入候选并逐步核对；尚未执行。"
             )
         else:
             self.dialogue_hint.clear()
@@ -480,6 +340,7 @@ class DashboardWindow(QMainWindow):
     def closeEvent(self, event):
         if self.can_close:
             self.timer.stop()
+            self.clock_timer.stop()
             event.accept()
             return
         event.ignore()
@@ -498,5 +359,6 @@ class DashboardWindow(QMainWindow):
         if self.closing:
             self.finish_close()
         else:
+            self.system_badge.update_status("● 通信线程已结束", "warn")
             self.receive_availability({})
             self.control_message.setText("后台线程已结束，请查看日志后重新启动工作台")

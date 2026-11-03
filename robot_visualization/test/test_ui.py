@@ -9,7 +9,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QAbstractItemView, QScrollArea
+    from PySide6.QtWidgets import (
+        QApplication,
+        QAbstractItemView,
+        QScrollArea,
+        QStackedWidget,
+    )
 
     from robot_visualization.ui.paging import PagedCombo, PagedText
     from ai_edge.common.catalog import seed_catalog
@@ -232,7 +237,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(received, [])
 
     def test_double_click_material_edits_in_persistent_field(self):
-        self.window.pages.setCurrentIndex(2)
+        self.window.switch_page(self.window.page_indexes["任务管理"])
         panel = self.window.draft_panel
         panel.new()
         panel.add_blank("PICK")
@@ -259,7 +264,7 @@ class WindowTests(unittest.TestCase):
         self.assertIs(field, panel.object_input)
 
     def test_paging_keeps_off_page_steps_and_deletes_visible_selection(self):
-        self.window.pages.setCurrentIndex(2)
+        self.window.switch_page(self.window.page_indexes["任务管理"])
         panel = self.window.draft_panel
         panel.new()
         for index in range(40):
@@ -280,7 +285,8 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(len(panel.steps()), 39)
 
     def test_text_pages_preserve_original_text_without_scroll_area(self):
-        self.assertEqual(self.window.pages.count(), 8)
+        self.assertIsInstance(self.window.pages, QStackedWidget)
+        self.assertEqual(self.window.pages.count(), 7)
         self.assertFalse(self.window.findChildren(QScrollArea))
         view = PagedText()
         view.resize(400, 180)
@@ -365,6 +371,63 @@ class WindowTests(unittest.TestCase):
                 self.assertEqual(sum(line.count(word) for line in view._lines), 6)
         finally:
             view.close()
+
+    def test_navigation_keeps_draft_and_moves_one_existing_log_card(self):
+        window = self.window
+        panel = window.draft_panel
+        panel.new()
+        panel.add_blank("NAVIGATE")
+        panel.table.item(0, 2).setText("station_a")
+        log_view, log_card = window.logs, window.log_card
+        window.append_log("layout-regression-entry")
+        QTest.mouseClick(window.nav_buttons["日志分析"], Qt.MouseButton.LeftButton)
+        self.app.processEvents()
+        self.assertEqual(window.pages.currentIndex(), window.page_indexes["日志分析"])
+        self.assertGreaterEqual(window.log_analysis_layout.indexOf(log_card), 0)
+        self.assertIs(window.logs, log_view)
+        self.assertIn("layout-regression-entry", log_view.toPlainText())
+        for title in (
+            "地图与定位",
+            "机器人状态",
+            "任务管理",
+            "相机图像",
+            "系统设置",
+            "首页",
+        ):
+            QTest.mouseClick(window.nav_buttons[title], Qt.MouseButton.LeftButton)
+            self.app.processEvents()
+            self.assertTrue(window.nav_buttons[title].isChecked())
+            self.assertEqual(window.pages.currentIndex(), window.page_indexes[title])
+        self.assertIs(window.home_grid.itemAtPosition(2, 0).widget(), log_card)
+        self.assertEqual(panel.steps()[0]["destination_station_id"], "station_a")
+        self.assertTrue(panel.dirty)
+        self.assertIs(
+            window.catalog_panels["stations"].parentWidget(),
+            window.settings_tabs.widget(1),
+        )
+
+    def test_header_and_progress_use_voice_state_without_claiming_motion(self):
+        self.assertTrue(self.window.clock_timer.isActive())
+        self.assertRegex(
+            self.window.time_label.text(), r"\d{4}-\d{2}-\d{2}\n\d{2}:\d{2}:\d{2}"
+        )
+        state = dict(
+            request_id="voice-one",
+            source_node="/audio_processing_node",
+            boot_id="boot",
+            stamp_ns=1,
+            event_seq=1,
+            stage=2,
+        )
+        self.window.receive_record("state", state)
+        self.assertIn("处理中", self.window.task_badge.text())
+        self.assertEqual(self.window.stage_progress.value(), 35)
+        self.window.receive_record(
+            "state", dict(state, stamp_ns=2, event_seq=2, stage=5)
+        )
+        self.assertIn("待命", self.window.task_badge.text())
+        self.assertEqual(self.window.stage_progress.value(), 100)
+        self.assertIn("非机器人执行", self.window.stage_progress.format())
 
 
 if __name__ == "__main__":
