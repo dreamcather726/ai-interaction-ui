@@ -24,8 +24,8 @@ def generate_launch_description():
     }
     nodes = []
     for executable, node_name, parameters in (
-        ("map_simulator_node", "map_node", {}),
-        ("camera_simulator_node", "camera_node", camera),
+        ("map_simulator_node", "map", {}),
+        ("camera_simulator_node", "camera_raw", camera),
         ("robot_state_simulator_node", "robot_state_node", {}),
         (
             "execute_task_action_server",
@@ -43,6 +43,7 @@ def generate_launch_description():
                 package="robot_simulator",
                 executable=executable,
                 name=node_name,
+                namespace="/camera" if executable == "camera_simulator_node" else "/",
                 output="screen",
                 parameters=[parameters],
             )

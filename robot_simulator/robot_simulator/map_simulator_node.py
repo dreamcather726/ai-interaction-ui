@@ -9,7 +9,7 @@ from robot_simulator.scene import occupancy_grid
 
 class MapSimulator(Node):
     def __init__(self):
-        super().__init__("map_node")
+        super().__init__("map")
         self.map_pub = self.create_publisher(OccupancyGrid, "/map", latched_qos())
         self.metadata_pub = self.create_publisher(
             MapMetaData, "/map_metadata", latched_qos()

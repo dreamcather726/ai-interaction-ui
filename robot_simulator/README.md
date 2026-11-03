@@ -84,8 +84,9 @@ ros2 launch robot_simulator simulator_with_fake_audio.launch.py \
 
 ## 消息与验收
 
-ROS 图中的地图、相机、底盘节点分别命名为 /map_node、/camera_node、
+ROS 图中的地图、相机、底盘节点分别命名为 /map、/camera/camera_raw、
 /robot_state_node；与独立 ros2 run 启动时保持一致，不带 simulator 后缀。
+相机使用 /camera 命名空间和 camera_raw 节点名；图像 Topic 仍为 /camera/image_raw。
 包名 robot_simulator、可执行文件名和 launch 文件名保持不变；界面仍标明模拟数据。
 
 | 名称 | 类型 / 内容 |

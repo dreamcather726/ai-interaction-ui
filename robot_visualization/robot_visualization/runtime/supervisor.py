@@ -252,8 +252,8 @@ class BackendSupervisor:
         for name, command in self.plans():
             if name == "robot_simulator":
                 simulated = {
-                    "map_node",
-                    "camera_node",
+                    "map",
+                    "camera_raw",
                     "robot_state_node",
                     "execute_task_action_server",
                     "play_audio_action_server",

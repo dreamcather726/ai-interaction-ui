@@ -13,7 +13,7 @@ from robot_simulator.scene import rgb_frame
 
 class CameraSimulator(Node):
     def __init__(self):
-        super().__init__("camera_node")
+        super().__init__("camera_raw", namespace="/camera")
         for name, value in (("width", 640), ("height", 480), ("fps", 10.0)):
             self.declare_parameter(name, value)
         self.width = self.get_parameter("width").value
