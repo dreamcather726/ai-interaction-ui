@@ -1,6 +1,7 @@
 """ROS 可执行入口：一个命令启动工作台与现有语音处理链路。"""
 
 import faulthandler
+import inspect
 import signal
 import sys
 
@@ -47,6 +48,11 @@ def main(args=None):
     if not faulthandler.is_enabled():
         faulthandler.enable(all_threads=True)
     console_log(f"正在启动语音工作台；Python={sys.executable}")
+    console_log(f"界面代码：{inspect.getfile(DashboardWindow)}")
+    console_log(
+        "界面布局："
+        + getattr(DashboardWindow, "LAYOUT_DESCRIPTION", "未标识，请核对是否加载旧版本")
+    )
     rclpy.init(args=args)
     app = QApplication([sys.argv[0]])
     configure_font(app)

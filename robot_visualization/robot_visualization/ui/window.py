@@ -28,6 +28,8 @@ from ai_edge.task_drafts.actions import action_steps
 class DashboardWindow(QMainWindow):
     """Qt 展示与交互层；模型加载、ROS 通信和进程管理由后台负责。"""
 
+    LAYOUT_DESCRIPTION = "分页版，六个独立页面；主窗口没有滚动区"
+
     start_requested = Signal()
     stop_requested = Signal()
     query_requested = Signal(str)
@@ -44,9 +46,13 @@ class DashboardWindow(QMainWindow):
         self.recording_since = None
         self.can_close = False
         self.closing = False
-        self.setWindowTitle("AI 语音交互工作台")
-        self.setMinimumSize(880, 620)
-        self.resize(1240, 840)
+        self.setWindowTitle("AI 语音交互工作台 · 分页版")
+        # Qt 使用屏幕逻辑像素；为标题栏和窗口边框预留空间，避免 840 高度超出屏幕。
+        available = self.screen().availableGeometry()
+        width = max(1, available.width() - 32)
+        height = max(1, available.height() - 48)
+        self.setMinimumSize(min(880, width), min(620, height))
+        self.resize(min(1240, width), min(840, height))
         self.setStyleSheet(STYLE)
         self.build_ui()
         self.refresh_controls()
@@ -78,7 +84,9 @@ class DashboardWindow(QMainWindow):
         header = QHBoxLayout()
         heading = QVBoxLayout()
         heading.addWidget(label("AI 语音交互工作台", "title"))
-        heading.addWidget(label("真实录音 · 语音识别 · 任务理解", "subtitle"))
+        heading.addWidget(
+            label("分页版 · 点击页签切换功能，长内容使用上一页／下一页", "subtitle")
+        )
         header.addLayout(heading)
         header.addStretch()
         self.connection_badge = Badge()
