@@ -9,7 +9,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QHeaderView,
-    QLineEdit,
     QPushButton,
     QTableWidgetItem,
     QVBoxLayout,
@@ -32,6 +31,8 @@ from robot_visualization.ui.paging import (
     PagedText,
     PageTabs,
 )
+from robot_visualization.ui.catalog import EntityPicker
+from ai_edge.common.catalog import catalog_ids
 
 ACTION_TITLES = {"NAVIGATE": "导航到", "PICK": "抓取", "PLACE": "放下"}
 
@@ -49,6 +50,7 @@ class TaskDraftPanel(QWidget):
     def __init__(self, config, parent=None):
         super().__init__(parent)
         self.config = config
+        self.stations, self.objects = list(config.stations), list(config.objects)
         self.saved = None
         self.records = {}
         self.candidate = None
@@ -107,11 +109,11 @@ class TaskDraftPanel(QWidget):
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
         self.kind_input.activated.connect(self.edit_selected_step)
-        self.object_input = QLineEdit()
-        self.object_input.setPlaceholderText("物料 ID；导航时留空")
+        self.object_input = EntityPicker()
+        self.object_input.setPlaceholderText("选择已配置物料；导航时留空")
         self.object_input.textEdited.connect(self.edit_selected_step)
-        self.station_input = QLineEdit()
-        self.station_input.setPlaceholderText("目标／操作工位 ID")
+        self.station_input = EntityPicker()
+        self.station_input.setPlaceholderText("选择目标／操作工位")
         self.station_input.textEdited.connect(self.edit_selected_step)
         fields.addWidget(self.kind_input)
         fields.addWidget(self.object_input, 1)
@@ -153,6 +155,14 @@ class TaskDraftPanel(QWidget):
         self.summary.setPlainText("确认只记录人工审阅结果；导航和抓取执行尚未接入。")
         self.pages.addTab(self.summary, "审阅摘要")
         self.refresh_controls()
+
+    def set_catalog(self, snapshot):
+        self.stations, self.objects = catalog_ids(snapshot)
+        self.object_input.set_entities(snapshot["objects"])
+        self.station_input.set_entities(snapshot["stations"])
+        if self.saved:
+            # 配置发生变化后必须按新白名单重新保存，旧确认按钮不得直接复用。
+            self.changed()
 
     def set_online(self, online):
         self.online = bool(online)
@@ -258,8 +268,6 @@ class TaskDraftPanel(QWidget):
         self.select_step(row)
         field = (self.kind_input, self.object_input, self.station_input)[column]
         field.setFocus(Qt.FocusReason.MouseFocusReason)
-        if isinstance(field, QLineEdit):
-            field.selectAll()
 
     def insert_step(self, step):
         row = self.table.rowCount()
@@ -433,9 +441,7 @@ class TaskDraftPanel(QWidget):
 
     def save(self):
         try:
-            prepared = validate_action_plan(
-                self.plan(), self.config.stations, self.config.objects
-            )
+            prepared = validate_action_plan(self.plan(), self.stations, self.objects)
             self.send(
                 "save",
                 dict(

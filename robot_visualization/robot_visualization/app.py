@@ -26,6 +26,10 @@ def build_dashboard():
     worker.control.connect(window.control_result, queued)
     worker.log.connect(window.append_log, queued)
     worker.draft.connect(window.receive_draft, queued)
+    worker.catalog.connect(window.receive_catalog, queued)
+    window.catalog_requested.connect(
+        lambda operation, value: worker.command("catalog_" + operation, value)
+    )
     window.draft_requested.connect(
         lambda operation, value: worker.command("draft_" + operation, value)
     )

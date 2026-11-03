@@ -11,6 +11,7 @@ from rclpy.parameter import Parameter
 from ai_edge.semantic.ros_candidates import assign_candidate
 from ai_edge.semantic.semantic_contract import SemanticError, candidate_payload
 from ai_edge.task_drafts.store import DraftError, DraftStore
+from ai_edge.common.catalog import catalog_ids, node_catalog
 from robot_interfaces.msg import TaskPlanDraft
 from robot_interfaces.srv import QueryTaskDraft, ReviewTaskDraft, SaveTaskDraft
 
@@ -22,6 +23,7 @@ class TaskDraftNode(Node):
         self.declare_parameter("confirmation_timeout", 300.0)
         for name in ("allowed_station_ids", "allowed_object_ids"):
             self.declare_parameter(name, Parameter.Type.STRING_ARRAY)
+        self.catalog = node_catalog(self)
         self.store = DraftStore(
             self.get_parameter("database_path").value,
             self.get_parameter_or("allowed_station_ids").value or [],
@@ -42,6 +44,21 @@ class TaskDraftNode(Node):
             f"任务草稿服务已就绪；数据库={self.get_parameter('database_path').value}；"
             "确认只保存人工审阅结果，尚未连接机器人执行"
         )
+
+    def refresh_catalog(self):
+        stations, objects = catalog_ids(
+            self.catalog.read(
+                self.get_parameter_or("allowed_station_ids").value or [],
+                self.get_parameter_or("allowed_object_ids").value or [],
+            )
+        )
+        if (stations, objects) != (self.store.stations, self.store.objects):
+            for draft in self.store.invalidate():
+                self.publisher.publish(self.message(draft))
+            self.store.stations, self.store.objects = stations, objects
+            self.get_logger().warning(
+                "工位或物料白名单已更新，旧草稿确认失效，请重新保存并核对"
+            )
 
     def message(self, value):
         draft = TaskPlanDraft()
@@ -79,6 +96,7 @@ class TaskDraftNode(Node):
     def handle(self, request, response, operation, value):
         response.request_id = request.request_id
         try:
+            self.refresh_catalog()
             record = self.store.apply(
                 request.request_id, operation, value, self.check(request)
             )
@@ -93,7 +111,7 @@ class TaskDraftNode(Node):
             self.get_logger().info(
                 f"草稿 {record['draft_id']} v{record['revision']}：{response.message}"
             )
-        except (DraftError, SemanticError, sqlite3.Error, OSError) as exc:
+        except (ValueError, sqlite3.Error, OSError) as exc:
             response.error_code = getattr(exc, "code", "DRAFT_STORAGE_FAILED")
             response.message = str(exc)
             self.get_logger().warning(f"草稿操作失败：{response.error_code}，{exc}")
@@ -149,6 +167,7 @@ class TaskDraftNode(Node):
     def poll(self):
         now, steady = self.get_clock().now().nanoseconds, time.monotonic()
         try:
+            self.refresh_catalog()
             changed = []
             if (
                 abs((now - self.last_ros) - (steady - self.last_steady) * 10**9)
@@ -159,7 +178,7 @@ class TaskDraftNode(Node):
             changed.extend(self.store.expire(now))
             for item in changed:
                 self.publisher.publish(self.message(item))
-        except sqlite3.Error as exc:
+        except (sqlite3.Error, ValueError, OSError) as exc:
             self.get_logger().error(f"草稿状态保存失败：{exc}")
         self.last_ros, self.last_steady = now, steady
 

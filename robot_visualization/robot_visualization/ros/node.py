@@ -76,7 +76,7 @@ class DashboardNode(Node):
         ]
 
     def on_component(self, message):
-        if message.component_id in ("asr", "microphone"):
+        if message.component_id in ("asr", "microphone", "parser"):
             self.components[message.component_id] = (message, time.monotonic())
 
     def on_receipt(self, message):
@@ -233,7 +233,11 @@ class DashboardNode(Node):
                 if asr
                 else ("等待模型状态", "idle")
             ),
-            "parser": available(self.parser.server_is_ready()),
+            "parser": (
+                states.get(fresh["parser"].state, ("未确认", "idle"))
+                if "parser" in fresh
+                else available(self.parser.server_is_ready())
+            ),
             "processor": available(self.process_client.service_is_ready()),
             "receiver": available("audio_receiver_node" in self.get_node_names()),
             "drafts": available(self.drafts.ready()),

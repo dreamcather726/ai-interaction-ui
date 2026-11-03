@@ -45,6 +45,11 @@ class BackendSupervisor:
 
     def plans(self):
         c = self.config
+        catalog_path = str(
+            getattr(
+                c, "catalog_path", c.audio_root.parent / "task_data/catalog.sqlite3"
+            )
+        )
         plans = [
             (
                 "audio_receiver_node",
@@ -59,7 +64,11 @@ class BackendSupervisor:
                 ros_command(
                     "ai_edge",
                     "parse_task_node",
-                    {"model": c.model, "ollama_url": c.ollama_url},
+                    {
+                        "model": c.model,
+                        "ollama_url": c.ollama_url,
+                        "catalog_path": catalog_path,
+                    },
                 ),
             ),
             (
@@ -86,6 +95,7 @@ class BackendSupervisor:
                         "parse_timeout": 300.0,
                         "allowed_station_ids": c.stations,
                         "allowed_object_ids": c.objects,
+                        "catalog_path": catalog_path,
                     },
                 ),
             ),
@@ -96,6 +106,7 @@ class BackendSupervisor:
                 "audio_root": str(c.audio_root),
                 "enable_semantic": True,
                 "parse_timeout": 300.0,
+                "catalog_path": catalog_path,
             }
             if c.stations:
                 params["allowed_station_ids"] = c.stations
@@ -106,7 +117,8 @@ class BackendSupervisor:
                 ros_command("ai_edge", "audio_processing_node", params),
             )
         draft_params = {
-            "database_path": str(c.audio_root.parent / "task_data/task_drafts.sqlite3")
+            "database_path": str(c.audio_root.parent / "task_data/task_drafts.sqlite3"),
+            "catalog_path": catalog_path,
         }
         if c.stations:
             draft_params["allowed_station_ids"] = c.stations
@@ -151,26 +163,30 @@ class BackendSupervisor:
         if not self.config.start_backend:
             self.emit("仅连接模式：不启动或接管已有后端进程")
             return
-        import fcntl
-
         folder = Path.home() / ".local/state/ai_interaction"
         folder.mkdir(parents=True, exist_ok=True)
-        self.lock_file = (
-            folder / f"dashboard_{os.getenv('ROS_DOMAIN_ID', '0')}.lock"
-        ).open("a")
-        try:
-            fcntl.flock(self.lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            self.emit("另一工作台已负责启动后端；本窗口只连接已有服务")
-            self.lock_file.close()
-            self.lock_file = None
-            return
+        if sys.platform.startswith("linux"):
+            import fcntl
+
+            self.lock_file = (
+                folder / f"dashboard_{os.getenv('ROS_DOMAIN_ID', '0')}.lock"
+            ).open("a")
+            try:
+                fcntl.flock(self.lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.emit("另一工作台已负责启动后端；本窗口只连接已有服务")
+                self.lock_file.close()
+                self.lock_file = None
+                return
         self.log_file = (
             folder / f"dashboard_{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}.log"
         ).open("a", encoding="utf-8")
         self.config.audio_root.mkdir(parents=True, exist_ok=True)
         self.emit(f"本次后台日志文件：{self.log_file.name}")
         self.emit(f"音频保存目录：{self.config.audio_root}")
+        self.emit(
+            f"基础资料库：{getattr(self.config, 'catalog_path', 'task_data/catalog.sqlite3')}；外部节点须配置同一绝对路径"
+        )
         self.emit(f"ASR Python：{self.config.asr_python}")
         self.emit(f"ASR 模型：{self.config.model_path}")
         self.emit(f"语义模型：{self.config.model}；Ollama：{self.config.ollama_url}")
@@ -268,11 +284,25 @@ class BackendSupervisor:
     def close(self):
         self.emit("正在关闭本窗口启动的后台进程……")
         self.stopping = True
-        for sig, timeout in (
-            (signal.SIGINT, 3.0),
-            (signal.SIGTERM, 1.0),
-            (signal.SIGKILL, 0.3),
-        ):
+        stages = (
+            (
+                (signal.SIGINT, 3.0),
+                (signal.SIGTERM, 1.0),
+                (signal.SIGKILL, 0.3),
+            )
+            if sys.platform.startswith("linux")
+            else ()
+        )
+        if not sys.platform.startswith("linux"):
+            for process in self.children.values():
+                if process.poll() is None:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3.0)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=1.0)
+        for sig, timeout in stages:
             live = [p for p in self.children.values() if self.group_is_alive(p)]
             if live:
                 self.emit(f"向 {len(live)} 个后台进程发送 {sig.name}，等待退出")
@@ -309,6 +339,8 @@ class BackendSupervisor:
     @staticmethod
     def group_is_alive(process):
         """回收包装进程后仍检查进程组，避免漏掉存活的节点或推理线程。"""
+        if not sys.platform.startswith("linux"):
+            return process.poll() is None
         process.poll()
         try:
             os.killpg(process.pid, 0)

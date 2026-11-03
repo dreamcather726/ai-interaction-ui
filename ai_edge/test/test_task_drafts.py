@@ -58,6 +58,17 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(result["state"], DraftStore.CONFIRMED)
         self.assertEqual(self.store.query(draft["draft_id"])[0], result)
 
+    def test_failed_save_rolls_back_and_following_request_can_commit(self):
+        invalid = deepcopy(self.value)
+        invalid["candidate"]["steps"][0]["object_id"] = "unknown_box"
+        with self.assertRaises(DraftError):
+            self.save("bad-save", invalid)
+        self.assertFalse(self.store.db.in_transaction)
+        self.assertEqual(self.store.query(), [])
+        saved = self.save("good-save")
+        self.assertEqual(saved["revision"], 1)
+        self.assertFalse(self.store.db.in_transaction)
+
     def test_same_save_is_idempotent_and_conflicting_request_is_rejected(self):
         first = self.save()
         self.assertEqual(self.save()["draft_id"], first["draft_id"])

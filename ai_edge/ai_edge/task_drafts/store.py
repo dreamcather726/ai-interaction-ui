@@ -1,8 +1,11 @@
 """SQLite 草稿仓库：内容版本、幂等请求和人工确认绑定。"""
 
+from ai_edge.common import error_codes as Codes
+
 import hashlib
 import json
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
@@ -54,7 +57,7 @@ class DraftStore:
             raise ValueError("草稿确认窗口必须在 1～1800 秒内")
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(str(path))
+        self.db = sqlite3.connect(str(path), isolation_level=None)
         self.stations, self.objects, self.timeout = (
             list(stations),
             list(objects),
@@ -75,18 +78,29 @@ class DraftStore:
             (draft["draft_id"], json.dumps(draft, ensure_ascii=False)),
         )
 
+    @contextmanager
+    def transaction(self):
+        """事务入口唯一，提交失败和业务异常都回滚，禁止隐式事务混入。"""
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            self.db.execute("COMMIT")
+        except BaseException:
+            if self.db.in_transaction:
+                self.db.execute("ROLLBACK")
+            raise
+
     def _get(self, draft_id):
         row = self.db.execute(
             "SELECT body FROM drafts WHERE id=?", (draft_id,)
         ).fetchone()
         if row is None:
-            raise DraftError("DRAFT_NOT_FOUND", "草稿不存在，请刷新列表")
+            raise DraftError(Codes.DRAFT_NOT_FOUND, "草稿不存在，请刷新列表")
         return json.loads(row[0])
 
     def invalidate(self):
         changed = []
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
+        with self.transaction():
             for (body,) in self.db.execute("SELECT body FROM drafts").fetchall():
                 draft = json.loads(body)
                 if draft["state"] in (self.EDITING, self.CONFIRMED):
@@ -101,8 +115,7 @@ class DraftStore:
 
     def expire(self, now_ns):
         changed = []
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
+        with self.transaction():
             for (body,) in self.db.execute("SELECT body FROM drafts").fetchall():
                 draft = json.loads(body)
                 if draft["state"] == self.EDITING and now_ns >= draft["expires_ns"]:
@@ -125,25 +138,24 @@ class DraftStore:
 
     def apply(self, request_id, operation, value, now_ns):
         if not request_id.strip() or len(request_id) > 256 or now_ns <= 0:
-            raise DraftError("INVALID_REQUEST", "请求 ID 或 ROS 时间不合法")
+            raise DraftError(Codes.INVALID_REQUEST, "请求 ID 或 ROS 时间不合法")
         fingerprint = hashlib.sha256(
             json.dumps([operation, value], ensure_ascii=False, sort_keys=True).encode(
                 "utf-8"
             )
         ).hexdigest()
-        with self.db:
-            self.db.execute("BEGIN IMMEDIATE")
+        with self.transaction():
             cached = self.db.execute(
                 "SELECT fingerprint,boot,body FROM requests WHERE id=?", (request_id,)
             ).fetchone()
             if cached:
                 if cached[0] != fingerprint:
                     raise DraftError(
-                        "REQUEST_ID_CONFLICT", "相同请求 ID 对应了不同操作"
+                        Codes.REQUEST_ID_CONFLICT, "相同请求 ID 对应了不同操作"
                     )
                 if cached[1] != self.boot_id:
                     raise DraftError(
-                        "DRAFT_RESTARTED", "草稿服务已重启，请刷新后重新审阅"
+                        Codes.DRAFT_RESTARTED, "草稿服务已重启，请刷新后重新审阅"
                     )
                 # 返回当前状态，避免幂等重放把界面回退到旧状态。
                 return self._get(json.loads(cached[2])["draft_id"])
@@ -167,13 +179,13 @@ class DraftStore:
         for field in ("session_id", "input_context_id"):
             if not value[field].strip() or len(value[field]) > 256:
                 raise DraftError(
-                    "INVALID_REQUEST", "草稿来源会话和上下文不能为空或超长"
+                    Codes.INVALID_REQUEST, "草稿来源会话和上下文不能为空或超长"
                 )
         sources = value["source_request_ids"]
         if len(sources) > 512 or any(
             not item.strip() or len(item) > 256 for item in sources
         ):
-            raise DraftError("INVALID_REQUEST", "来源请求列表无效")
+            raise DraftError(Codes.INVALID_REQUEST, "来源请求列表无效")
         try:
             prepared = validate_action_plan(
                 value["candidate"], self.stations, self.objects
@@ -184,16 +196,16 @@ class DraftStore:
             old = self._get(value["draft_id"])
             if value["expected_revision"] != old["revision"]:
                 raise DraftError(
-                    "DRAFT_VERSION_CHANGED", "草稿已被修改，请刷新后再操作"
+                    Codes.DRAFT_VERSION_CHANGED, "草稿已被修改，请刷新后再操作"
                 )
             if (value["session_id"], value["input_context_id"]) != (
                 old["session_id"],
                 old["input_context_id"],
             ):
-                raise DraftError("DRAFT_CONTEXT_MISMATCH", "不能修改草稿所属的会话")
+                raise DraftError(Codes.DRAFT_CONTEXT_MISMATCH, "不能修改草稿所属的会话")
         else:
             if value["expected_revision"] != 0:
-                raise DraftError("DRAFT_VERSION_CHANGED", "新草稿版本必须为零")
+                raise DraftError(Codes.DRAFT_VERSION_CHANGED, "新草稿版本必须为零")
             old = dict(draft_id="draft-" + uuid4().hex, revision=0, event_seq=0)
         return dict(
             draft_id=old["draft_id"],
@@ -213,24 +225,26 @@ class DraftStore:
 
     def _review(self, operation, value, now_ns):
         if operation not in ("confirm", "cancel"):
-            raise DraftError("INVALID_REQUEST", "不支持的草稿操作")
+            raise DraftError(Codes.INVALID_REQUEST, "不支持的草稿操作")
         draft = self._get(value["draft_id"])
         for field in ("boot_id", "session_id", "input_context_id"):
             if value[field] != draft[field] or draft["boot_id"] != self.boot_id:
                 raise DraftError(
-                    "DRAFT_CONTEXT_MISMATCH", "草稿来源或服务实例已变化，请刷新"
+                    Codes.DRAFT_CONTEXT_MISMATCH, "草稿来源或服务实例已变化，请刷新"
                 )
         if value["revision"] != draft["revision"]:
-            raise DraftError("DRAFT_VERSION_CHANGED", "草稿版本已变化，请重新审阅")
+            raise DraftError(Codes.DRAFT_VERSION_CHANGED, "草稿版本已变化，请重新审阅")
         if (
             value["confirmation_token"] != draft["confirmation_token"]
             or not value["confirmation_token"]
         ):
-            raise DraftError("DRAFT_TOKEN_INVALID", "确认信息已失效，请重新保存草稿")
+            raise DraftError(
+                Codes.DRAFT_TOKEN_INVALID, "确认信息已失效，请重新保存草稿"
+            )
         if operation == "confirm":
             if draft["state"] != self.EDITING or now_ns >= draft["expires_ns"]:
                 raise DraftError(
-                    "DRAFT_EXPIRED", "草稿不在可确认状态，请重新保存后审阅"
+                    Codes.DRAFT_EXPIRED, "草稿不在可确认状态，请重新保存后审阅"
                 )
             try:
                 prepared = validate_action_plan(
@@ -240,12 +254,12 @@ class DraftStore:
                 raise DraftError(exc.code, str(exc)) from exc
             if prepared != draft["candidate"]:
                 raise DraftError(
-                    "DRAFT_REVIEW_REQUIRED", "旧草稿须先展开并重新保存，再逐步确认"
+                    Codes.DRAFT_REVIEW_REQUIRED, "旧草稿须先展开并重新保存，再逐步确认"
                 )
             draft["state"] = self.CONFIRMED
         else:
             if draft["state"] not in (self.EDITING, self.CONFIRMED):
-                raise DraftError("DRAFT_CLOSED", "草稿已经关闭")
+                raise DraftError(Codes.DRAFT_CLOSED, "草稿已经关闭")
             draft["state"] = self.CANCELED
             draft["confirmation_token"] = ""
         draft.update(updated_ns=now_ns, event_seq=draft["event_seq"] + 1)

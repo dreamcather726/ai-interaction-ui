@@ -1,6 +1,9 @@
 """AI 端音频处理调度：依次调用 ASR 和语义解析，不直接实现模型。"""
 
+from ai_edge.common import error_codes as Codes
+
 import time
+from ai_edge.common.catalog import catalog_ids, node_catalog
 from types import SimpleNamespace
 
 from action_msgs.msg import GoalStatus
@@ -48,6 +51,7 @@ class AudioPipeline:
         node.declare_parameter("clarification_timeout", 300.0)
         node.declare_parameter("allowed_station_ids", Parameter.Type.STRING_ARRAY)
         node.declare_parameter("allowed_object_ids", Parameter.Type.STRING_ARRAY)
+        self.catalog = node_catalog(node)
         for name in ("asr_timeout", "parse_timeout"):
             value = node.get_parameter(name).value
             if not 0 < value <= 300:
@@ -133,9 +137,9 @@ class AudioPipeline:
         )
         self.report(job, operation, False, message, code)
         state = AudioProcessingState.FAILED
-        if code == "NO_SPEECH":
+        if code == Codes.NO_SPEECH:
             state = AudioProcessingState.NO_SPEECH
-        elif code == "CANCELED":
+        elif code == Codes.CANCELED:
             state = AudioProcessingState.CANCELED
         self.visualization.state(job, state, message, code)
         self.active = None
@@ -158,7 +162,7 @@ class AudioPipeline:
             if self.active is not None:
                 if self.active.get("handle") is not None:
                     self.active["handle"].cancel_goal_async()
-                self.fail("PIPELINE_FAILED", str(exc))
+                self.fail(Codes.PIPELINE_FAILED, str(exc))
             else:
                 self.node.get_logger().error(
                     f"音频处理流程异常（PIPELINE_FAILED）：{exc}"
@@ -185,9 +189,13 @@ class AudioPipeline:
             elif stage == "parse_result":
                 job["handle"].cancel_goal_async()
             code = (
-                "DEPENDENCY_UNAVAILABLE"
+                Codes.DEPENDENCY_UNAVAILABLE
                 if stage.endswith("wait")
-                else ("PARSE_TIMEOUT" if stage.startswith("parse") else "ASR_TIMEOUT")
+                else (
+                    Codes.PARSE_TIMEOUT
+                    if stage.startswith("parse")
+                    else Codes.ASR_TIMEOUT
+                )
             )
             self.fail(code, "AI 处理阶段等待超时；结果尚未确认，不自动重试")
             return
@@ -232,7 +240,7 @@ class AudioPipeline:
             handle = job["future"].result()
             if not handle.accepted:
                 self.fail(
-                    "PARSE_GOAL_REJECTED",
+                    Codes.PARSE_GOAL_REJECTED,
                     "AI 拒绝语义解析请求，具体原因请查看 AI 端业务回执",
                 )
                 return
@@ -257,11 +265,10 @@ class AudioPipeline:
         goal.request_id, goal.session_id = msg.request_id, msg.session_id
         goal.input_id = "audio:" + msg.segment_id
         goal.input_context_id, goal.text = msg.input_context_id, job["text"]
-        goal.allowed_station_ids = (
-            self.node.get_parameter_or("allowed_station_ids").value or []
-        )
-        goal.allowed_object_ids = (
-            self.node.get_parameter_or("allowed_object_ids").value or []
+        goal.allowed_station_ids, goal.allowed_object_ids = self.allowed_ids()
+        job["allowed_ids"] = (
+            list(goal.allowed_station_ids),
+            list(goal.allowed_object_ids),
         )
 
         captured = msg.capture_started_at.sec * 10**9 + msg.capture_started_at.nanosec
@@ -300,7 +307,7 @@ class AudioPipeline:
         result.request_id, result.session_id = msg.request_id, msg.session_id
         result.input_id = "audio:" + msg.segment_id
         result.input_context_id = msg.input_context_id
-        result.outcome, result.error_code = result.CANCELED, "CANCELED"
+        result.outcome, result.error_code = result.CANCELED, Codes.CANCELED
         result.message = (
             "已清空待补充信息，请重新描述完整任务"
             if command == "reset"
@@ -350,9 +357,12 @@ class AudioPipeline:
     def accept_parse(self, wrapped):
         """先独立校验语义结果，再保存实际候选和澄清信息。"""
         job = self.active
-        stations = self.node.get_parameter_or("allowed_station_ids").value or []
-        objects = self.node.get_parameter_or("allowed_object_ids").value or []
+        stations, objects = self.allowed_ids()
         try:
+            # 同时限制在提交时和当前有效的集合，配置扩张不能扩大已发请求的授权范围。
+            old_stations, old_objects = job.get("allowed_ids", (stations, objects))
+            stations = [value for value in stations if value in old_stations]
+            objects = [value for value in objects if value in old_objects]
             ready = validate_parse_result(job["msg"], wrapped, stations, objects)
         except ResultValidationError as exc:
             self.fail(exc.code, str(exc))
@@ -385,6 +395,14 @@ class AudioPipeline:
         )
         self.active = None
 
+    def allowed_ids(self):
+        return catalog_ids(
+            self.catalog.read(
+                self.node.get_parameter_or("allowed_station_ids").value or [],
+                self.node.get_parameter_or("allowed_object_ids").value or [],
+            )
+        )
+
     # 跨轮待澄清候选的维护。
 
     def update_dialogue(self, job, result, stations, objects):
@@ -397,7 +415,7 @@ class AudioPipeline:
                 merged = reconcile_candidate(candidate, previous.candidate)
                 if merged != candidate:
                     raise SemanticError(
-                        "DIALOGUE_CONTEXT_LOST",
+                        Codes.DIALOGUE_CONTEXT_LOST,
                         "解析结果遗漏了已有信息，请重新回答追问",
                     )
             answer = validate_candidate(candidate, stations, objects)

@@ -23,22 +23,29 @@ from robot_visualization.ui.paging import ElidedLabel, PagedList, PagedText, Pag
 from robot_visualization.task_model import normalize_candidate
 from ai_edge.task_drafts.store import plan_summary
 from ai_edge.task_drafts.actions import action_steps
+from ai_edge.common.catalog import catalog_ids, seed_catalog
+from robot_visualization.ui.catalog import CatalogPanel
 
 
 class DashboardWindow(QMainWindow):
     """Qt 展示与交互层；模型加载、ROS 通信和进程管理由后台负责。"""
 
-    LAYOUT_DESCRIPTION = "分页版，六个独立页面；主窗口没有滚动区"
+    LAYOUT_DESCRIPTION = "分页版，八个独立页面；含工位管理与物料管理，主窗口没有滚动区"
 
     start_requested = Signal()
     stop_requested = Signal()
     query_requested = Signal(str)
     shutdown_requested = Signal()
     draft_requested = Signal(str, dict)
+    catalog_requested = Signal(str, dict)
 
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.catalog_snapshot = getattr(
+            config, "catalog_snapshot", None
+        ) or seed_catalog(config.stations, config.objects)
+        self.catalog_panels = {}
         self.store = RecordStore(limit=100)
         self.selected_request = None
         self.availability = {}
@@ -103,6 +110,8 @@ class DashboardWindow(QMainWindow):
             ("历史记录", self._build_history_card),
             ("服务状态", self._build_service_card),
             ("运行日志", self._build_log_card),
+            ("工位管理", lambda: self._build_catalog_card("stations", "工位管理")),
+            ("物料管理", lambda: self._build_catalog_card("objects", "物料管理")),
         ):
             self.pages.addTab(build(), title)
         return self.pages
@@ -159,12 +168,10 @@ class DashboardWindow(QMainWindow):
             services.body.addLayout(row)
         stations = "、".join(self.config.stations) or "未配置"
         objects = "、".join(self.config.objects) or "未配置"
-        services.body.addWidget(
-            PagedText(
-                f"语义模型：{self.config.model}\n工位：{stations}\n物料：{objects}"
-            ),
-            1,
+        self.catalog_details = PagedText(
+            f"语义模型：{self.config.model}\n工位：{stations}\n物料：{objects}"
         )
+        services.body.addWidget(self.catalog_details, 1)
         return services
 
     def _build_result_card(self):
@@ -227,10 +234,35 @@ class DashboardWindow(QMainWindow):
     def _build_draft_card(self):
         card = Card("任务草稿与确认", "按实际顺序增删步骤，保存后逐步核对并确认。")
         self.draft_panel = TaskDraftPanel(self.config)
+        self.draft_panel.set_catalog(self.catalog_snapshot)
         self.draft_panel.command_requested.connect(self.draft_requested.emit)
         self.draft_panel.log_message.connect(self.append_log)
         card.body.addWidget(self.draft_panel, 1)
         return card
+
+    def _build_catalog_card(self, kind, title):
+        card = Card(title, "维护实际ID、名称和语音别名；停用或删除后新任务不能再引用。")
+        panel = CatalogPanel(kind, self.catalog_snapshot)
+        panel.command_requested.connect(self.catalog_requested.emit)
+        self.catalog_panels[kind] = panel
+        card.body.addWidget(panel, 1)
+        return card
+
+    @Slot(dict)
+    def receive_catalog(self, value):
+        if value.get("snapshot"):
+            self.catalog_snapshot = value["snapshot"]
+            self.draft_panel.set_catalog(self.catalog_snapshot)
+            stations, objects = catalog_ids(self.catalog_snapshot)
+            self.catalog_details.setPlainText(
+                f"语义模型：{self.config.model}\n工位：{'、'.join(stations) or '未配置'}"
+                f"\n物料：{'、'.join(objects) or '未配置'}"
+                f"\n资料版本：{self.catalog_snapshot['revision']}"
+            )
+        for panel in self.catalog_panels.values():
+            panel.receive(value)
+        if value.get("message"):
+            self.append_log(value["message"])
 
     @Slot(dict)
     def receive_draft(self, value):
@@ -256,6 +288,8 @@ class DashboardWindow(QMainWindow):
         self.query_button.setEnabled(bool(value.get("query") and not self.closing))
         self.draft_panel.setEnabled(not self.closing)
         self.draft_panel.set_online(value.get("drafts", False))
+        for panel in self.catalog_panels.values():
+            panel.setEnabled(not self.closing)
 
     def start_recording(self):
         if not self.start_button.isEnabled():

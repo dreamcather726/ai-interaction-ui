@@ -1,8 +1,10 @@
 """音频任务入队、容量限制和重复输入检测，不依赖 ROS 节点。"""
 
+from ai_edge.common import error_codes as Codes
+
 import hashlib
 import json
-from collections import deque
+from collections import OrderedDict, deque
 
 
 class AudioJobQueue:
@@ -10,8 +12,8 @@ class AudioJobQueue:
 
     def __init__(self):
         self.queue = deque()
-        self.seen_requests = {}
-        self.seen_inputs = {}
+        self.seen_requests = OrderedDict()
+        self.seen_inputs = OrderedDict()
 
     def __bool__(self):
         return bool(self.queue)
@@ -52,11 +54,18 @@ class AudioJobQueue:
         fingerprint = digest.hexdigest()
         key = (msg.session_id, msg.segment_id)
         for cache, identity, code in (
-            (self.seen_requests, msg.request_id, "REQUEST_ID_CONFLICT"),
-            (self.seen_inputs, key, "INPUT_ID_CONFLICT"),
+            (self.seen_requests, msg.request_id, Codes.REQUEST_ID_CONFLICT),
+            (self.seen_inputs, key, Codes.INPUT_ID_CONFLICT),
         ):
             if identity in cache:
                 same = cache[identity] == fingerprint
+                if same:
+                    for seen, item in (
+                        (self.seen_requests, msg.request_id),
+                        (self.seen_inputs, key),
+                    ):
+                        if item in seen:
+                            seen.move_to_end(item)
                 return (
                     same,
                     "" if same else code,
@@ -67,10 +76,11 @@ class AudioJobQueue:
                     ),
                 )
         if len(self.queue) + bool(active) >= 10:
-            return False, "PIPELINE_BUSY", "音频已保存，但 AI 处理队列已满"
-        if len(self.seen_requests) >= 1024:
-            return False, "RECOVERY_REQUIRED", "音频已保存，但输入去重缓存已满"
+            return False, Codes.PIPELINE_BUSY, "音频已保存，但 AI 处理队列已满"
         self.seen_requests[msg.request_id] = fingerprint
         self.seen_inputs[key] = fingerprint
+        for cache in (self.seen_requests, self.seen_inputs):
+            while len(cache) > 1024:
+                cache.popitem(last=False)
         self.queue.append(job)
         return True, "", "AI 端已受理音频，任务已进入处理队列"

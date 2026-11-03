@@ -1,5 +1,7 @@
 """ROS 语义 Action 服务；网络推理在单独线程执行，取消与查询不被阻塞。"""
 
+from ai_edge.common import error_codes as Codes
+
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -14,8 +16,9 @@ from ai_edge.semantic.ollama_backend import OllamaBackend
 from ai_edge.semantic.semantic_contract import SemanticError
 from ai_edge.semantic.semantic_input import read_parse_goal
 from ai_edge.semantic.ros_candidates import assign_candidate
+from ai_edge.common.catalog import node_catalog
 from robot_interfaces.action import ParseTask
-from robot_interfaces.msg import RequestStatus
+from robot_interfaces.msg import ComponentStatus, RequestStatus
 
 
 class ParseTaskNode(Node):
@@ -30,15 +33,20 @@ class ParseTaskNode(Node):
         ):
             self.declare_parameter(name, value)
         self.timeout = self.get_parameter("request_timeout").value
+        self.catalog = node_catalog(self)
         self.backend = OllamaBackend(
             self.get_parameter("ollama_url").value,
             self.get_parameter("model").value,
             self.timeout,
+            catalog=self.catalog,
         )
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ollama")
         self.pending = None
         self.reserved = False
         self.receipts = self.create_publisher(RequestStatus, "/ai/request_status", 10)
+        self.health_pub = self.create_publisher(
+            ComponentStatus, "/robot/component_status", 20
+        )
         self.group = ReentrantCallbackGroup()
         self.server = ActionServer(
             self,
@@ -51,6 +59,9 @@ class ParseTaskNode(Node):
         )
         self.clock = Clock(clock_type=ClockType.STEADY_TIME)
         self.timer = self.create_timer(0.05, self.poll, clock=self.clock)
+        self.health_timer = self.create_timer(
+            1.0, self.publish_health, clock=self.clock
+        )
         self.get_logger().info(
             f"语义解析 Action 已启动，模型：{self.backend.model}，地址：{self.backend.base_url}"
         )
@@ -60,7 +71,9 @@ class ParseTaskNode(Node):
         try:
             read_parse_goal(goal)
             if self.reserved or self.pending is not None:
-                raise SemanticError("LLM_BUSY", "上一条语义推理尚未结束，本次未受理")
+                raise SemanticError(
+                    Codes.LLM_BUSY, "上一条语义推理尚未结束，本次未受理"
+                )
         except SemanticError as exc:
             receipt = RequestStatus()
             receipt.stamp = self.get_clock().now().to_msg()
@@ -90,12 +103,16 @@ class ParseTaskNode(Node):
         job = self.pending
         if not job["response"].done():
             if job["handle"].is_cancel_requested:
+                job["discard"] = True
+                job["discard_code"] = Codes.CANCELED
                 job["response"].set_exception(
-                    SemanticError("CANCELED", "语义解析已取消，迟到结果将丢弃")
+                    SemanticError(Codes.CANCELED, "语义解析已取消，迟到结果将丢弃")
                 )
             elif time.monotonic() >= job["deadline"]:
+                job["discard"] = True
+                job["discard_code"] = Codes.PARSE_TIMEOUT
                 job["response"].set_exception(
-                    SemanticError("PARSE_TIMEOUT", "语义解析超时，未生成任务候选")
+                    SemanticError(Codes.PARSE_TIMEOUT, "语义解析超时，未生成任务候选")
                 )
             elif job["worker"].done():
                 try:
@@ -103,7 +120,34 @@ class ParseTaskNode(Node):
                 except Exception as exc:
                     job["response"].set_exception(exc)
         if job["worker"].done():
+            if job.get("discard"):
+                job["worker"].exception()
+                self.get_logger().warning("语义推理收尾结束，迟到结果已丢弃")
             self.pending = None
+
+    def publish_health(self):
+        status = ComponentStatus()
+        status.stamp = self.get_clock().now().to_msg()
+        status.source_node = self.get_fully_qualified_name()
+        status.component_id = "parser"
+        draining = bool(self.pending and self.pending.get("discard"))
+        status.enabled = not draining
+        status.state = (
+            status.DEGRADED
+            if draining
+            else status.BUSY if self.pending or self.reserved else status.READY
+        )
+        status.message = (
+            "语义推理超时或取消，正在收尾；迟到结果将丢弃"
+            if draining
+            else (
+                "语义模型正在推理"
+                if self.pending or self.reserved
+                else "语义服务可受理请求；模型连接状态由实际调用确认"
+            )
+        )
+        status.error_code = self.pending.get("discard_code", "") if draining else ""
+        self.health_pub.publish(status)
 
     async def execute(self, handle):
         """关联原始 ID，映射业务结果与 Action 终态，不触发机器人执行。"""
@@ -120,13 +164,14 @@ class ParseTaskNode(Node):
                 "response": response,
                 "handle": handle,
                 "deadline": time.monotonic() + self.timeout,
+                "discard": False,
             }
             self.feedback(
                 handle, ParseTask.Feedback.INFERENCING, "正在使用千问 2B 解析任务"
             )
             answer = await response
             if handle.is_cancel_requested:
-                raise SemanticError("CANCELED", "语义解析已取消")
+                raise SemanticError(Codes.CANCELED, "语义解析已取消")
             self.feedback(
                 handle, ParseTask.Feedback.VALIDATING, "模型输出及白名单校验已完成"
             )
@@ -136,14 +181,16 @@ class ParseTaskNode(Node):
             if answer.unsupported:
                 result.outcome, result.error_code = (
                     result.UNSUPPORTED,
-                    "UNSUPPORTED_TASK",
+                    Codes.UNSUPPORTED_TASK,
                 )
-                result.message = "未识别到支持的导航、抓取、放下或搬运任务，此输入未生成候选"
+                result.message = (
+                    "未识别到支持的导航、抓取、放下或搬运任务，此输入未生成候选"
+                )
                 handle.abort()
             elif answer.missing_fields:
                 result.outcome, result.error_code = (
                     result.NEED_CLARIFICATION,
-                    "MISSING_FIELDS",
+                    Codes.MISSING_FIELDS,
                 )
                 result.missing_fields = list(answer.missing_fields)
                 result.clarification_question = answer.clarification_question
@@ -154,10 +201,10 @@ class ParseTaskNode(Node):
                 result.message = "任务候选已生成，仍需准备及用户明确确认"
                 handle.succeed()
         except Exception as exc:
-            result.error_code = getattr(exc, "code", "LLM_UNAVAILABLE")
+            result.error_code = getattr(exc, "code", Codes.LLM_UNAVAILABLE)
             result.message = str(exc)
             if handle.is_cancel_requested:
-                result.outcome, result.error_code = result.CANCELED, "CANCELED"
+                result.outcome, result.error_code = result.CANCELED, Codes.CANCELED
                 handle.canceled()
             else:
                 handle.abort()
@@ -173,6 +220,7 @@ class ParseTaskNode(Node):
     def close(self):
         """停止接收新工作；Python 无法强制终止正在进行的 HTTP 线程。"""
         self.timer.cancel()
+        self.health_timer.cancel()
         self.server.destroy()
         self.worker.shutdown(wait=False, cancel_futures=True)
 

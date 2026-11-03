@@ -71,6 +71,13 @@ class TaskActionTests(unittest.TestCase):
             )
         self.assertEqual(caught.exception.code, "INVALID_ACTION_ORDER")
 
+    def test_place_without_prior_pick_is_rejected(self):
+        candidate = empty_candidate("PLACE")
+        candidate.update(object_id="box_1", dropoff_station_id="station_a")
+        with self.assertRaises(SemanticError) as caught:
+            validate_action_plan(candidate, self.stations, self.objects)
+        self.assertEqual(caught.exception.code, "INVALID_ACTION_ORDER")
+
     def test_over_limit_after_expansion_is_rejected_without_truncating(self):
         step = {key: value for key, value in self.transport.items() if key != "steps"}
         with self.assertRaises(SemanticError) as caught:

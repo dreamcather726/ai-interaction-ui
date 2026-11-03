@@ -2,9 +2,11 @@
 
 import importlib.util
 import time
+import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+from pathlib import Path
 
 ROS_AVAILABLE = importlib.util.find_spec("rclpy") is not None
 if ROS_AVAILABLE:
@@ -24,6 +26,17 @@ class ConsoleStatusTests(unittest.TestCase):
         rclpy.shutdown()
 
     def setUp(self):
+        # 日志测试隔离真实资料库，不在用户的 task_data 下创建或读取配置。
+        from ai_edge.common.catalog import CatalogStore
+
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        catalog = CatalogStore(Path(folder.name) / "catalog.sqlite3")
+        override = patch(
+            "robot_visualization.config.CatalogStore", return_value=catalog
+        )
+        override.start()
+        self.addCleanup(override.stop)
         self.events = SimpleNamespace(
             report_log=Mock(),
             record=Mock(),

@@ -14,6 +14,7 @@ from rclpy.node import Node
 from std_srvs.srv import Trigger
 
 from ai_interface.devices.capture_health import MicrophoneHealth
+from ai_interface.devices import error_codes as Codes
 from robot_interfaces.msg import AudioSegment
 
 
@@ -67,23 +68,23 @@ class MicrophoneSenderNode(Node):
                 "正在录音，无需重复开始"
                 if response.success
                 else (
-                    "AUDIO_DEVICE_UNAVAILABLE: 上一次采集已退出，请先调用停止服务清理"
+                    f"{Codes.AUDIO_DEVICE_UNAVAILABLE}: 上一次采集已退出，请先调用停止服务清理"
                 )
             )
             return response
         executable = shutil.which("parecord")
         if executable is None:
-            response.message = (
-                "AUDIO_DEVICE_UNAVAILABLE: 未找到 parecord，请安装 pulseaudio-utils"
-            )
+            response.message = f"{Codes.AUDIO_DEVICE_UNAVAILABLE}: 未找到 parecord，请安装 pulseaudio-utils"
             return response
         self.session_id = self.get_parameter("session_id").value.strip()
         self.context_id = self.get_parameter("input_context_id").value.strip()
         if not self.session_id or not self.context_id:
-            response.message = "INVALID_REQUEST: 会话 ID 和输入上下文 ID 不能为空"
+            response.message = (
+                f"{Codes.INVALID_REQUEST}: 会话 ID 和输入上下文 ID 不能为空"
+            )
             return response
         if self.get_clock().now().nanoseconds <= 0:
-            response.message = "INVALID_REQUEST: ROS 时钟尚未就绪"
+            response.message = f"{Codes.INVALID_REQUEST}: ROS 时钟尚未就绪"
             return response
         try:
             self.errors = tempfile.TemporaryFile()
@@ -104,7 +105,9 @@ class MicrophoneSenderNode(Node):
             os.set_blocking(self.process.stdout.fileno(), False)
         except (OSError, ValueError) as exc:
             self.abort_recording()
-            response.message = f"AUDIO_DEVICE_UNAVAILABLE: 麦克风设备不可用：{exc}"
+            response.message = (
+                f"{Codes.AUDIO_DEVICE_UNAVAILABLE}: 麦克风设备不可用：{exc}"
+            )
             return response
         self.pcm.clear()
         self.started_at = time.monotonic()
@@ -136,7 +139,7 @@ class MicrophoneSenderNode(Node):
             or len(self.pcm) >= self.max_bytes
             or time.monotonic() - self.started_at >= self.max_seconds
         ):
-            result = self.stop_recording(None, Trigger.Response())
+            result = self.health.response(self._do_stop_capture(Trigger.Response()))
             if result.success:
                 self.get_logger().info(result.message)
             else:
@@ -169,9 +172,9 @@ class MicrophoneSenderNode(Node):
 
     def stop_recording(self, request, response):
         """手动／自动停止共用状态广播，界面无需靠倒计时推断。"""
-        return self.health.response(self._stop_recording(request, response))
+        return self.health.response(self._do_stop_capture(response))
 
-    def _stop_recording(self, request, response):
+    def _do_stop_capture(self, response):
         """停止实际采集，仅发送包含完整采样帧的有效 PCM 数据。"""
         if self.process is None:
             response.success = True
@@ -207,7 +210,7 @@ class MicrophoneSenderNode(Node):
                 f"音频已发送：{len(self.pcm)} 字节 PCM，请求 ID：{msg.request_id}"
             )
         except (OSError, RuntimeError) as exc:
-            response.message = f"AUDIO_CAPTURE_FAILED: 音频采集失败：{exc}"
+            response.message = f"{Codes.AUDIO_CAPTURE_FAILED}: 音频采集失败：{exc}"
         finally:
             self.pcm.clear()
         return response

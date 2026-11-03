@@ -1,5 +1,7 @@
 """提供文件语音识别服务；模型推理在工作线程执行，不阻塞 ROS 回调。"""
 
+from ai_edge.common import error_codes as Codes
+
 import sys
 import time
 import traceback
@@ -95,10 +97,11 @@ class ASRNode(Node):
                 )
             self.loading = None
             self.publish_health()
-        if self.loading is not None and time.monotonic() - self.last_load_log >= 10:
-            self.last_load_log = time.monotonic()
+        now = time.monotonic()
+        if self.loading is not None and now - self.last_load_log >= 10:
+            self.last_load_log = now
             self.get_logger().info(
-                f"ASR 初始化仍在进行，已等待 {self.last_load_log - self.load_started:.0f} 秒；"
+                f"ASR 初始化仍在进行，已等待 {now - self.load_started:.0f} 秒；"
                 "尚未就绪，请关注上方依赖导入与模型下载／加载输出"
             )
 
@@ -107,18 +110,25 @@ class ASRNode(Node):
         if self.pending is None:
             return
         job = self.pending
+        if time.monotonic() >= job["deadline"] and not job["response"].done():
+            job["discard"] = True
+            job["response"].set_exception(
+                ASRError(Codes.ASR_TIMEOUT, "识别等待超时；本次不返回假结果")
+            )
+            self.publish_health()
         if job["worker"].done():
-            if not job["response"].done():
+            if job.get("discard"):
+                self.get_logger().warning(
+                    "超时 ASR 推理已收尾，迟到结果已丢弃，可以受理新请求"
+                )
+                job["worker"].exception()
+            elif not job["response"].done():
                 try:
                     job["response"].set_result(job["worker"].result())
                 except Exception as exc:
                     job["response"].set_exception(exc)
             self.pending = None
-        elif time.monotonic() >= job["deadline"] and not job["response"].done():
-            job["response"].set_exception(
-                ASRError("ASR_TIMEOUT", "识别等待超时；本次不返回假结果")
-            )
-            # Python 线程不能强行终止模型；完成前仍拒绝新推理，防止无限堆积。
+            self.publish_health()
 
     async def recognize(self, request, response):
         """原样关联输入信息，异步等待真实识别结果并统一封装失败响应。"""
@@ -139,17 +149,18 @@ class ASRNode(Node):
             if not self.ready:
                 if self.load_error:
                     raise ASRError(
-                        getattr(self.load_error, "code", "ASR_MODEL_UNAVAILABLE"),
+                        getattr(self.load_error, "code", Codes.ASR_MODEL_UNAVAILABLE),
                         str(self.load_error),
                     )
-                raise ASRError("ASR_NOT_READY", "模型仍在初始化，请等待就绪提示")
+                raise ASRError(Codes.ASR_NOT_READY, "模型仍在初始化，请等待就绪提示")
             if self.pending is not None:
-                raise ASRError("ASR_BUSY", "模型仍在处理上一条音频，本次未受理")
+                raise ASRError(Codes.ASR_BUSY, "模型仍在处理上一条音频，本次未受理")
             answer = Future()
             self.pending = {
                 "worker": self.worker.submit(self.backend.transcribe, pcm),
                 "response": answer,
                 "deadline": time.monotonic() + self.timeout,
+                "discard": False,
             }
             self.get_logger().info(
                 f"开始识别，请求 ID：{request.request_id}；文件={request.audio_path}；"
@@ -164,21 +175,21 @@ class ASRNode(Node):
                 result.message = "语音识别完成"
             else:
                 result.status = RecognizedText.NO_SPEECH
-                result.error_code, result.message = "NO_SPEECH", "未识别到有效语音"
+                result.error_code, result.message = Codes.NO_SPEECH, "未识别到有效语音"
         except FileNotFoundError as exc:
             result.error_code, result.message = (
-                "FILE_NOT_FOUND",
+                Codes.FILE_NOT_FOUND,
                 f"音频文件不存在：{exc}",
             )
         except ASRError as exc:
             result.error_code, result.message = exc.code, str(exc)
         except (ValueError, OSError, wave.Error, EOFError) as exc:
             result.error_code, result.message = (
-                "AUDIO_FORMAT_UNSUPPORTED",
+                Codes.AUDIO_FORMAT_UNSUPPORTED,
                 f"音频校验失败：{exc}",
             )
         except Exception as exc:
-            result.error_code, result.message = "ASR_FAILED", f"语音识别异常：{exc}"
+            result.error_code, result.message = Codes.ASR_FAILED, f"语音识别异常：{exc}"
         result.recognized_at = self.get_clock().now().to_msg()
         result.stamp = self.get_clock().now().to_msg()
         if result.success:
@@ -195,7 +206,12 @@ class ASRNode(Node):
         return response
 
     def publish_health(self):
-        self.health.publish(self.ready, self.pending is not None, self.load_error)
+        self.health.publish(
+            self.ready,
+            self.pending is not None,
+            self.load_error,
+            bool(self.pending and self.pending.get("discard")),
+        )
 
     def close(self):
         """拒绝新的后台任务；Python 无法强行终止已经运行的推理线程。"""

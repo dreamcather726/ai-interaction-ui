@@ -1,5 +1,7 @@
 """任务候选的独立校验：单任务或可变长度的有序任务列表。"""
 
+from ai_edge.common import error_codes as Codes
+
 from dataclasses import dataclass
 
 
@@ -83,27 +85,29 @@ class SemanticAnswer:
 
 def _primitive(data, stations, objects):
     if not isinstance(data, dict) or set(data) != set(STEP_SCHEMA["required"]):
-        raise SemanticError("INVALID_MODEL_OUTPUT", "任务字段不完整或含额外字段")
+        raise SemanticError(Codes.INVALID_MODEL_OUTPUT, "任务字段不完整或含额外字段")
     kinds = ("UNKNOWN", "NAVIGATE", "TRANSPORT", "PICK", "PLACE")
     if data["task_type"] not in kinds:
-        raise SemanticError("INVALID_MODEL_OUTPUT", "不支持的任务类型")
+        raise SemanticError(Codes.INVALID_MODEL_OUTPUT, "不支持的任务类型")
     if type(data["return_required"]) is not bool or any(
         not isinstance(data[f], str) or len(data[f]) > 128 for f in ID_FIELDS
     ):
-        raise SemanticError("INVALID_MODEL_OUTPUT", "任务字段类型或长度不符合约定")
+        raise SemanticError(Codes.INVALID_MODEL_OUTPUT, "任务字段类型或长度不符合约定")
     candidate = dict(data)
     for field in ID_FIELDS:
         candidate[field] = candidate[field].strip()
     task = candidate["task_type"]
     if task == "UNKNOWN":
         if candidate["return_required"] or any(candidate[f] for f in ID_FIELDS):
-            raise SemanticError("INVALID_MODEL_OUTPUT", "不支持的任务不能携带运动参数")
+            raise SemanticError(
+                Codes.INVALID_MODEL_OUTPUT, "不支持的任务不能携带运动参数"
+            )
         return SemanticAnswer(candidate, unsupported=True)
     for field in ID_FIELDS:
         allowed = objects if field == "object_id" else stations
         if candidate[field] and candidate[field] not in allowed:
             raise SemanticError(
-                "UNKNOWN_OBJECT" if field == "object_id" else "UNKNOWN_STATION",
+                Codes.UNKNOWN_OBJECT if field == "object_id" else Codes.UNKNOWN_STATION,
                 f"字段 {field} 的标识不在白名单中：{candidate[field]}",
             )
     if task == "NAVIGATE":
@@ -123,11 +127,11 @@ def _primitive(data, stations, objects):
         required = ["object_id", "dropoff_station_id"]
         forbidden = ("pickup_station_id", "destination_station_id", "return_station_id")
     if task in ("PICK", "PLACE") and candidate["return_required"]:
-        raise SemanticError("INVALID_MODEL_OUTPUT", "抓取和放下不能附带返回导航")
+        raise SemanticError(Codes.INVALID_MODEL_OUTPUT, "抓取和放下不能附带返回导航")
     if any(candidate[f] for f in forbidden) or (
         not candidate["return_required"] and candidate["return_station_id"]
     ):
-        raise SemanticError("INVALID_MODEL_OUTPUT", "任务包含互斥字段")
+        raise SemanticError(Codes.INVALID_MODEL_OUTPUT, "任务包含互斥字段")
     if candidate["return_required"]:
         required.append("return_station_id")
     missing = tuple(field for field in required if not candidate[field])
@@ -150,15 +154,17 @@ def _primitive(data, stations, objects):
 
 def validate_candidate(data, stations, objects):
     if not isinstance(data, dict):
-        raise SemanticError("INVALID_MODEL_OUTPUT", "任务必须为对象")
+        raise SemanticError(Codes.INVALID_MODEL_OUTPUT, "任务必须为对象")
     data = dict(data)
     data.setdefault("steps", [])
     if set(data) != set(SCHEMA["required"]) or not isinstance(data["steps"], list):
-        raise SemanticError("INVALID_MODEL_OUTPUT", "任务结构不符合约定")
+        raise SemanticError(Codes.INVALID_MODEL_OUTPUT, "任务结构不符合约定")
     steps = data.pop("steps")
     if data["task_type"] != "SEQUENCE":
         if steps:
-            raise SemanticError("INVALID_MODEL_OUTPUT", "单任务不能同时携带步骤列表")
+            raise SemanticError(
+                Codes.INVALID_MODEL_OUTPUT, "单任务不能同时携带步骤列表"
+            )
         answer = _primitive(data, stations, objects)
         return SemanticAnswer(
             dict(answer.candidate, steps=[]),
@@ -169,14 +175,14 @@ def validate_candidate(data, stations, objects):
     _primitive(dict(data, task_type="UNKNOWN"), stations, objects)
     if not 1 <= len(steps) <= MAX_PLAN_STEPS:
         raise SemanticError(
-            "PLAN_TOO_LONG", f"步骤数量须为 1～{MAX_PLAN_STEPS}，不会截断任务"
+            Codes.PLAN_TOO_LONG, f"步骤数量须为 1～{MAX_PLAN_STEPS}，不会截断任务"
         )
     checked, missing, question = [], [], ""
     for index, step in enumerate(steps):
         answer = _primitive(step, stations, objects)
         if answer.unsupported:
             raise SemanticError(
-                "INVALID_MODEL_OUTPUT", "列表中的步骤必须是导航、抓取、放下或搬运"
+                Codes.INVALID_MODEL_OUTPUT, "列表中的步骤必须是导航、抓取、放下或搬运"
             )
         checked.append(answer.candidate)
         missing.extend(f"steps[{index}].{field}" for field in answer.missing_fields)
@@ -194,20 +200,20 @@ def reconcile_candidate(data, partial):
         data["return_required"] != partial["return_required"]
     ):
         raise SemanticError(
-            "DIALOGUE_CONFLICT", "任务类型或返回要求已改变，请先说“重新开始”"
+            Codes.DIALOGUE_CONFLICT, "任务类型或返回要求已改变，请先说“重新开始”"
         )
     merged = dict(data)
     for field in ID_FIELDS:
         previous, current = partial[field], data[field].strip()
         if previous and current and previous != current:
             raise SemanticError(
-                "DIALOGUE_CONFLICT", f"已有 {field} 冲突，请先说“重新开始”"
+                Codes.DIALOGUE_CONFLICT, f"已有 {field} 冲突，请先说“重新开始”"
             )
         merged[field] = previous or current
     if data["task_type"] == "SEQUENCE":
         if len(data["steps"]) != len(partial["steps"]):
             raise SemanticError(
-                "DIALOGUE_CONFLICT", "澄清期间不能增删或重排步骤，请先重新开始"
+                Codes.DIALOGUE_CONFLICT, "澄清期间不能增删或重排步骤，请先重新开始"
             )
         merged["steps"] = [
             reconcile_candidate(new, old)

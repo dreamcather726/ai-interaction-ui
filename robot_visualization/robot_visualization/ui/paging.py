@@ -3,6 +3,7 @@
 import math
 
 from PySide6.QtCore import QEvent, QObject, QSignalBlocker, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QTextLayout, QTextOption
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -178,27 +179,38 @@ class PagedText(QWidget):
         self._timer.start(0)
 
     def _reflow(self):
-        if not self.isVisible() or self.body.contentsRect().width() < 16:
+        if not self.isVisible():
             return
         metrics = self.body.fontMetrics()
-        width = max(1, self.body.contentsRect().width() - 2)
+        actual_width = self.body.contentsRect().width() - 2
+        width = actual_width if actual_width >= 16 else 400
         self._rows = max(
             1, self.body.contentsRect().height() // max(1, metrics.lineSpacing())
         )
         self._lines = []
+        row_height = metrics.lineSpacing()
         for paragraph in self._text.replace("\t", "    ").split("\n"):
             if not paragraph:
                 self._lines.append("")
-            while paragraph:
-                low, high = 1, len(paragraph)
-                while low < high:
-                    middle = (low + high + 1) // 2
-                    if metrics.horizontalAdvance(paragraph[:middle]) <= width:
-                        low = middle
-                    else:
-                        high = middle - 1
-                self._lines.append(paragraph[:low])
-                paragraph = paragraph[low:]
+                continue
+            text_layout = QTextLayout(paragraph, self.body.font())
+            option = QTextOption()
+            option.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+            text_layout.setTextOption(option)
+            text_layout.beginLayout()
+            # QTextLine 的偏移是 UTF-16 单元，按相同编码切片，避免表情后文字丢失。
+            encoded = paragraph.encode("utf-16-le")
+            while True:
+                line = text_layout.createLine()
+                if not line.isValid():
+                    break
+                line.setLineWidth(width)
+                row_height = max(row_height, math.ceil(line.height()))
+                start = line.textStart() * 2
+                end = start + line.textLength() * 2
+                self._lines.append(encoded[start:end].decode("utf-16-le"))
+            text_layout.endLayout()
+        self._rows = max(1, self.body.contentsRect().height() // max(1, row_height))
         pages = max(1, math.ceil(len(self._lines) / self._rows))
         self.pager.set_pages(pages, pages - 1 if self._follow_tail else None)
         self._follow_tail = False
@@ -214,7 +226,7 @@ class PagedText(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._timer.start(0)
+        self._reflow()
 
 
 class PagedTable(QTableWidget):
@@ -224,6 +236,7 @@ class PagedTable(QTableWidget):
         super().__init__(0, columns, parent)
         self.pager = PageBar()
         self.page_size = 1
+        self.keep_empty_selection = False
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
         disable_scrolling(self)
         self.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerItem)
@@ -264,6 +277,12 @@ class PagedTable(QTableWidget):
         start = self.pager.page * self.page_size
         for row in range(self.rowCount()):
             self.setRowHidden(row, not start <= row < start + self.page_size)
+        if (
+            self.rowCount()
+            and (self.currentRow() >= 0 or not self.keep_empty_selection)
+            and not start <= self.currentRow() < start + self.page_size
+        ):
+            self.setCurrentCell(start, 0)
 
     def show_row(self, row):
         if row >= 0:
@@ -327,6 +346,8 @@ class PagedList(QListWidget):
         start = self.pager.page * self.page_size
         for index in range(self.count()):
             self.item(index).setHidden(not start <= index < start + self.page_size)
+        if self.count() and not start <= self.currentRow() < start + self.page_size:
+            self.setCurrentRow(start)
 
     def _page_changed(self, page):
         self._render()
@@ -428,6 +449,9 @@ class PagedCombo(QWidget):
             self.box.clear()
             for title, value in visible:
                 self.box.addItem(title, value)
+                self.box.setItemData(
+                    self.box.count() - 1, title, Qt.ItemDataRole.ToolTipRole
+                )
             self._visible_items = list(visible)
         self.box.setCurrentIndex(
             self._current - start if start <= self._current < start + 5 else -1
@@ -439,7 +463,5 @@ class PagedCombo(QWidget):
         self.activated.emit(self._current)
 
     def _page_changed(self, page):
-        self._current = page * 5 if self._items else -1
+        # 浏览另一组不会选择或加载草稿；真实选择仅由下拉框 activated 发出。
         self._render()
-        if self._current >= 0:
-            self.activated.emit(self._current)

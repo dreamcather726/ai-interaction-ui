@@ -5,6 +5,7 @@ import time
 import traceback
 
 import rclpy
+from ai_edge.common.catalog import CatalogStore
 from PySide6.QtCore import QThread, Signal
 from rclpy.executors import SingleThreadedExecutor
 
@@ -19,6 +20,7 @@ class RosWorker(QThread):
     control = Signal(dict)
     log = Signal(str)
     draft = Signal(dict)
+    catalog = Signal(dict)
 
     def __init__(self):
         super().__init__()
@@ -26,6 +28,10 @@ class RosWorker(QThread):
         self.node = DashboardNode(self)
         self.config = self.node.config
         self.manager = BackendSupervisor(self.config)
+        self.catalog_store = CatalogStore(self.config.catalog_path)
+        self.catalog_revision = self.config.catalog_snapshot["revision"]
+        self.last_catalog_poll = 0.0
+        self.catalog_error = ""
 
     def report_log(self, message):
         console_log(message)
@@ -36,8 +42,58 @@ class RosWorker(QThread):
             self.commands.put_nowait((operation, value))
         except queue.Full:
             self.report_log(f"未能排入操作：{operation}，操作队列已满")
-            signal = self.draft if operation.startswith("draft_") else self.control
-            signal.emit({"success": False, "message": "操作队列已满，请稍后再试"})
+            signal = (
+                self.catalog
+                if operation.startswith("catalog_")
+                else self.draft if operation.startswith("draft_") else self.control
+            )
+            signal.emit(
+                {
+                    "success": False,
+                    "message": "操作队列已满，请稍后再试",
+                    "kind": value.get("kind") if isinstance(value, dict) else None,
+                }
+            )
+
+    def catalog_command(self, operation, value):
+        try:
+            snapshot = (
+                self.catalog_store.read()
+                if operation == "query"
+                else self.catalog_store.update(
+                    operation, value["kind"], value["entity"], value["revision"]
+                )
+            )
+            self.catalog_revision = snapshot["revision"]
+            self.catalog.emit(
+                dict(
+                    success=True,
+                    kind=value["kind"],
+                    snapshot=snapshot,
+                    message="基础资料已保存；同一资料库的新版后端在后续任务中使用",
+                )
+            )
+            self.report_log(
+                f"基础资料 {operation}：{value['kind']}；版本 {self.catalog_revision}"
+            )
+        except Exception as exc:
+            self.report_log(f"基础资料 {operation} 失败：{exc}")
+            self.catalog.emit(dict(success=False, kind=value["kind"], message=str(exc)))
+
+    def poll_catalog(self):
+        if time.monotonic() - self.last_catalog_poll < 1.0:
+            return
+        self.last_catalog_poll = time.monotonic()
+        try:
+            snapshot = self.catalog_store.read()
+            self.catalog_error = ""
+            if snapshot["revision"] != self.catalog_revision:
+                self.catalog_revision = snapshot["revision"]
+                self.catalog.emit(dict(success=True, snapshot=snapshot))
+        except Exception as exc:
+            if str(exc) != self.catalog_error:
+                self.catalog_error = str(exc)
+                self.report_log(f"基础资料刷新失败：{exc}")
 
     def run(self):
         executor = SingleThreadedExecutor()
@@ -68,13 +124,16 @@ class RosWorker(QThread):
                             else ""
                         )
                     )
-                    if operation.startswith("draft_"):
+                    if operation.startswith("catalog_"):
+                        self.catalog_command(operation.removeprefix("catalog_"), value)
+                    elif operation.startswith("draft_"):
                         self.node.drafts.send(operation.removeprefix("draft_"), value)
                     elif operation == "query":
                         self.node.request_query(value)
                     else:
                         self.node.request_control(operation)
                 self.node.poll()
+                self.poll_catalog()
                 for line in self.manager.drain():
                     self.log.emit(line)
         except Exception as exc:

@@ -11,7 +11,8 @@ try:
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QAbstractItemView, QScrollArea
 
-    from robot_visualization.ui.paging import PagedText
+    from robot_visualization.ui.paging import PagedCombo, PagedText
+    from ai_edge.common.catalog import seed_catalog
 
     from robot_visualization.ui.window import DashboardWindow
 
@@ -235,11 +236,13 @@ class WindowTests(unittest.TestCase):
         panel = self.window.draft_panel
         panel.new()
         panel.add_blank("PICK")
+        panel.set_catalog(seed_catalog([], ["box_1"]))
         self.app.processEvents()
         field = panel.object_input
         cell = panel.table.visualItemRect(panel.table.item(0, 1)).center()
         QTest.mouseDClick(panel.table.viewport(), Qt.MouseButton.LeftButton, pos=cell)
-        QTest.keyClicks(field, "box_1")
+        field.box.setCurrentIndex(field.box.findData("box_1"))
+        field.box.activated.emit(field.box.currentIndex())
         self.app.processEvents()
         self.assertEqual(panel.steps()[0]["object_id"], "box_1")
         self.assertIs(field, panel.object_input)
@@ -277,7 +280,7 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(len(panel.steps()), 39)
 
     def test_text_pages_preserve_original_text_without_scroll_area(self):
-        self.assertEqual(self.window.pages.count(), 6)
+        self.assertEqual(self.window.pages.count(), 8)
         self.assertFalse(self.window.findChildren(QScrollArea))
         view = PagedText()
         view.resize(400, 180)
@@ -291,6 +294,75 @@ class WindowTests(unittest.TestCase):
             view.pager.go(1)
             self.assertNotEqual(first, view.body.text())
             self.assertEqual(view.toPlainText(), value)
+        finally:
+            view.close()
+
+    def test_browsing_saved_draft_pages_does_not_select_or_clear_unsaved_plan(self):
+        panel = self.window.draft_panel
+        panel.new()
+        panel.add_blank("NAVIGATE")
+        panel.table.item(0, 2).setText("station_a")
+        chosen = []
+        panel.history.activated.connect(chosen.append)
+        for index in range(12):
+            panel.history.addItem(str(index), str(index))
+        panel.history.setCurrentIndex(0)
+        panel.history.pager.go(1)
+        self.assertEqual(chosen, [])
+        self.assertEqual(panel.steps()[0]["destination_station_id"], "station_a")
+        self.assertTrue(panel.dirty)
+        panel.history.box.activated.emit(0)
+        self.assertEqual(chosen, [5])
+
+    def test_catalog_picker_retains_disabled_id_without_silently_selecting_another(
+        self,
+    ):
+        panel = self.window.draft_panel
+        panel.new()
+        panel.add_blank("PICK")
+        panel.table.item(0, 1).setText("retired_box")
+        panel.focus_field(0, 1)
+        snapshot = seed_catalog(["station_a"], ["box_1"])
+        panel.set_catalog(snapshot)
+        self.assertEqual(panel.object_input.text(), "retired_box")
+        self.assertEqual(panel.steps()[0]["object_id"], "retired_box")
+        self.assertNotIn("retired_box", panel.objects)
+
+    def test_catalog_save_is_async_and_updates_the_draft_whitelist_on_receipt(self):
+        panel = self.window.catalog_panels["stations"]
+        sent = []
+        self.window.catalog_requested.connect(
+            lambda operation, value: sent.append((operation, value))
+        )
+        panel.new()
+        panel.identity.setText("loading_zone")
+        panel.name.setText("装货区")
+        panel.aliases.setText("取货区，装货点")
+        panel.mark_dirty()
+        panel.save()
+        self.assertTrue(panel.pending)
+        self.assertEqual(sent[0][0], "save")
+        self.assertEqual(sent[0][1]["entity"]["aliases"], ["取货区", "装货点"])
+        self.assertNotIn("loading_zone", self.window.draft_panel.stations)
+        snapshot = seed_catalog(["loading_zone"], [])
+        snapshot["revision"] = 1
+        self.window.receive_catalog(
+            dict(success=True, kind="stations", snapshot=snapshot)
+        )
+        self.assertFalse(panel.pending)
+        self.assertIn("loading_zone", self.window.draft_panel.stations)
+
+    def test_text_wrap_preserves_non_bmp_characters_and_whole_words_when_they_fit(self):
+        view = PagedText()
+        view.resize(220, 160)
+        view.show()
+        try:
+            original = "你好🙂 alpha beta gamma delta " * 6
+            view.setPlainText(original)
+            self.app.processEvents()
+            self.assertEqual("".join(view._lines), original)
+            for word in ("alpha", "beta", "gamma", "delta"):
+                self.assertEqual(sum(line.count(word) for line in view._lines), 6)
         finally:
             view.close()
 
