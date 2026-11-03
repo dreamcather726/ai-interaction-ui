@@ -531,6 +531,51 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(window.hardware_page_labels["网络连接"].text(), network_before)
         self.assertNotIn("SIM 网络", network_before)
         self.assertEqual(window.robot_page_battery.value(), 82)
+        window.receive_record(
+            "sim_status",
+            {
+                "world_fresh": True,
+                "chassis_ready": True,
+                "camera_ready": True,
+                "held_object_id": "box_1",
+                "state": "RUNNING",
+                "mode": "统一模拟执行 · 执行中",
+                "stations": {"station_a": [-2.0, 0.0], "station_b": [2.0, 0.0]},
+                "objects": [
+                    {
+                        "id": "box_1",
+                        "carried": True,
+                        "station_id": "",
+                        "x": -2.0,
+                        "y": 0.0,
+                    }
+                ],
+            },
+        )
+        self.assertEqual(window.material_state_label.text(), "持有物料：box_1")
+        self.assertIn("随机器人携带", window.material_state_label.toolTip())
+        window.receive_record(
+            "sim_status",
+            {
+                "world_fresh": True,
+                "chassis_ready": True,
+                "camera_ready": True,
+                "held_object_id": "",
+                "state": "SUCCEEDED",
+                "mode": "统一模拟执行 · 已完成",
+                "objects": [
+                    {
+                        "id": "box_1",
+                        "carried": False,
+                        "station_id": "station_b",
+                        "x": 2.0,
+                        "y": 0.0,
+                    }
+                ],
+            },
+        )
+        self.assertEqual(window.material_state_label.text(), "持有物料：无")
+        self.assertIn("station_b", window.material_state_label.toolTip())
         window.receive_record("sim_battery", {"percentage": 0.63, "voltage": 24.0})
         self.assertEqual(
             window.hardware_labels["电池电量"].text(),

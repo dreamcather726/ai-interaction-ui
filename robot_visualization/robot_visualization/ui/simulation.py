@@ -2,7 +2,7 @@
 
 import math
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QLabel, QSizePolicy
 
@@ -117,6 +117,8 @@ class SimulationView:
             self.status = value
             self.render_chassis()
             self.render_camera_status()
+            self.render_material_state()
+            self.paint_map()
         elif kind == "sim_task":
             if any(
                 key in value and value[key] != self.task.get(key)
@@ -148,6 +150,28 @@ class SimulationView:
         for view in (self.window.camera_view, self.window.camera_page_view):
             view.setToolTip(f"SIM 摄像头：{ready}；{frame}")
 
+    def render_material_state(self):
+        field = self.window.material_state_label
+        if (
+            not self.status.get("world_fresh", True)
+            or "held_object_id" not in self.status
+        ):
+            field.setText("持有物料：状态未确认")
+            return
+        held = self.status["held_object_id"]
+        field.setText("持有物料：" + (held or "无"))
+        details = [
+            f"{item['id']}："
+            + (
+                "随机器人携带"
+                if item.get("carried")
+                else item.get("station_id", "未知位置")
+            )
+            for item in self.status.get("objects", [])
+            if isinstance(item, dict) and "id" in item
+        ]
+        field.setToolTip("\n".join(details) or "尚未配置模拟物料")
+
     def paint_map(self):
         if self.map is None:
             return
@@ -164,14 +188,31 @@ class SimulationView:
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QPen(QColor("#2479e8"), 2))
-        for name, x in (("A", -2.0), ("B", 2.0)):
-            location = point(x, 0)
+        stations = self.status.get("stations") or {
+            "station_a": (-2.0, 0.0),
+            "station_b": (2.0, 0.0),
+        }
+        for station, coordinates in stations.items():
+            location = point(*coordinates)
+            name = {"station_a": "A", "station_b": "B"}.get(station, station)
             painter.setBrush(QColor("#d2e5ff"))
             painter.drawEllipse(location, 9, 9)
             painter.drawText(location + QPointF(12, -10), name)
         if self.odom:
             painter.setBrush(QColor("#2479e8"))
             painter.drawEllipse(point(self.odom["x"], self.odom["y"]), 7, 7)
+        for item in self.status.get("objects", []):
+            if not isinstance(item, dict) or not all(
+                key in item for key in ("id", "x", "y")
+            ):
+                continue
+            if item.get("carried") and self.odom:
+                location = point(self.odom["x"], self.odom["y"]) + QPointF(12, 12)
+            else:
+                location = point(item["x"], item["y"]) + QPointF(0, 16)
+            painter.setBrush(QColor("#d69827" if item.get("carried") else "#39a278"))
+            painter.drawRect(QRectF(location.x() - 4, location.y() - 4, 8, 8))
+            painter.drawText(location + QPointF(8, 6), str(item["id"]))
         painter.end()
         for view in (self.window.map_view, self.window.map_page_view):
             view.set_image(image)

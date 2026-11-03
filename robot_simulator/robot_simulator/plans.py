@@ -51,3 +51,17 @@ def describe_step(index, total, step):
     kind, station, object_id = step
     action = {"NAVIGATE": "导航到", "PICK": "抓取", "PLACE": "放下"}[kind]
     return f"{index}/{total} {action} {object_id + ' @ ' if object_id else ''}{station}"
+
+
+def return_step_indices(candidate):
+    """Zero-based return-navigation indices when the source explicitly requests them."""
+    source = (
+        candidate.steps if candidate.task_type == candidate.SEQUENCE else [candidate]
+    )
+    indices, offset = set(), 0
+    for step in source:
+        offset += 4 if step.task_type == candidate.TRANSPORT else 1
+        if step.return_required:
+            indices.add(offset)
+            offset += 1
+    return indices

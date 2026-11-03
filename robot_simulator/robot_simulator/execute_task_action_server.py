@@ -1,8 +1,10 @@
 """In-memory PrepareTask + ExecuteTask demo. No robot commands are published."""
 
 from copy import deepcopy
+import json
 import threading
 import time
+from uuid import uuid4
 
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -10,24 +12,48 @@ from rclpy.node import Node
 from robot_interfaces.action import ExecuteTask
 from robot_interfaces.msg import TaskSnapshot
 from robot_interfaces.srv import PrepareTask
+from std_msgs.msg import String
 
 from robot_simulator.common import latched_qos, run_node, set_time, time_ns
-from robot_simulator.plans import describe_step, expand_steps
+from robot_simulator.execution import ExecutionError, SimulationExecution
+from robot_simulator.plans import expand_steps, return_step_indices
 
 
 class ExecuteTaskSimulator(Node):
     def __init__(self):
         super().__init__("execute_task_action_server")
         self.declare_parameter("step_seconds", 2.0)
+        self.declare_parameter("linear_speed", 0.8)
+        self.declare_parameter("step_timeout", 60.0)
+        self.declare_parameter("fail_step", 0)
+        self.declare_parameter(
+            "stations_json", '{"station_a":[-2.0,0.0],"station_b":[2.0,0.0]}'
+        )
+        self.declare_parameter("objects_json", '{"box_1":"station_a"}')
         self.step_seconds = self.get_parameter("step_seconds").value
         if not 0.1 <= self.step_seconds <= 60.0:
             raise ValueError("step_seconds 必须在 [0.1,60] 内")
         self.lock = threading.Lock()
+        self.world = SimulationExecution(
+            json.loads(self.get_parameter("stations_json").value),
+            json.loads(self.get_parameter("objects_json").value),
+            speed=self.get_parameter("linear_speed").value,
+            action_seconds=self.step_seconds,
+            step_timeout=self.get_parameter("step_timeout").value,
+            fail_step=self.get_parameter("fail_step").value,
+        )
+        self.world_boot = uuid4().hex
+        self.world_sequence = 0
+        self.active_task_id = ""
         self.shutdown_event = threading.Event()
         self.prepared = {}
         self.active_dispatch = ""
         self.reserved = None
         self.sequence = 0
+        self.world_publisher = self.create_publisher(
+            String, "/simulator/world_state", latched_qos()
+        )
+        self.world_timer = self.create_timer(0.1, self.publish_world)
         self.group = ReentrantCallbackGroup()
         self.snapshots = self.create_publisher(
             TaskSnapshot, "/task/snapshot", latched_qos()
@@ -63,8 +89,9 @@ class ExecuteTaskSimulator(Node):
             callback_group=self.group,
         )
         self.get_logger().info(
-            "[SIM] /task/prepare 与 /task/execute 已就绪；每步只推进模拟时钟"
+            "[SIM] 统一执行调度已就绪：导航到站后推进抓放；位置、物料与任务共用同一状态"
         )
+        self.publish_world()
 
     def prepare(self, request, response):
         now = self.get_clock().now().nanoseconds
@@ -90,6 +117,7 @@ class ExecuteTaskSimulator(Node):
             with self.lock:
                 if self.reserved and self.reserved[0].task_id == task.task_id:
                     raise ValueError("同一任务正在模拟执行")
+                self.world.validate_plan(steps)
                 if len(self.prepared) >= 100:
                     self.prepared.pop(next(iter(self.prepared)))
                 self.prepared[task.task_id] = (
@@ -108,7 +136,9 @@ class ExecuteTaskSimulator(Node):
             response.confirmation_context_id = request.confirmation_context_id
             set_time(response.confirmation_expires_at, now + 300 * 10**9)
         except ValueError as exc:
-            response.error_code, response.message = "INVALID_REQUEST", str(exc)
+            response.error_code, response.message = getattr(
+                exc, "code", "INVALID_REQUEST"
+            ), str(exc)
         return response
 
     def accept(self, request):
@@ -133,15 +163,63 @@ class ExecuteTaskSimulator(Node):
                     "[SIM] 拒绝执行：版本、来源或确认有效期不匹配"
                 )
                 return GoalResponse.REJECT
+            try:
+                self.world.start(prepared[1], return_step_indices(task.candidate))
+            except ExecutionError as exc:
+                self.get_logger().warning(f"[SIM] 拒绝执行：{exc.code}；{exc}")
+                return GoalResponse.REJECT
             self.reserved = self.prepared.pop(request.task_id)
             self.active_dispatch = request.dispatch_id
+            self.active_task_id = request.task_id
             return GoalResponse.ACCEPT
+
+    def world_frame(self, stamp):
+        frame = self.world.frame()
+        self.world_sequence += 1
+        frame.update(
+            boot_id=self.world_boot,
+            event_seq=self.world_sequence,
+            stamp={"sec": stamp.sec, "nanosec": stamp.nanosec},
+            task_id=self.active_task_id,
+            dispatch_id=self.active_dispatch,
+        )
+        return frame
+
+    def publish_world(self):
+        with self.lock:
+            frame = self.world_frame(self.get_clock().now().to_msg())
+            self.world_publisher.publish(
+                String(data=json.dumps(frame, ensure_ascii=False))
+            )
+
+    @staticmethod
+    def update_snapshot(snapshot, frame):
+        snapshot.state = {
+            "IDLE": snapshot.PENDING_CONFIRMATION,
+            "RUNNING": snapshot.RUNNING,
+            "SUCCEEDED": snapshot.SUCCEEDED,
+            "CANCELED": snapshot.CANCELED,
+            "FAILED": snapshot.FAILED,
+        }[frame["state"]]
+        snapshot.step, snapshot.progress = frame["step"], frame["progress"]
+        for field in (
+            "pickup_completed",
+            "dropoff_completed",
+            "return_completed",
+            "error_code",
+        ):
+            setattr(snapshot, field, frame[field])
 
     def publish(self, handle, snapshot, message, state=None):
         with self.lock:
             self.sequence += 1
             snapshot.event_seq = self.sequence
-        snapshot.stamp = self.get_clock().now().to_msg()
+            snapshot.stamp = self.get_clock().now().to_msg()
+            frame = self.world_frame(snapshot.stamp)
+            self.update_snapshot(snapshot, frame)
+            self.world_publisher.publish(
+                String(data=json.dumps(frame, ensure_ascii=False))
+            )
         snapshot.message = message
         if state is not None:
             snapshot.state = state
@@ -159,7 +237,7 @@ class ExecuteTaskSimulator(Node):
         request = handle.request
         snapshot = TaskSnapshot()
         with self.lock:
-            task, steps, _, _, expires = self.reserved
+            task, _, _, _, expires = self.reserved
             snapshot.task = deepcopy(task)
             set_time(snapshot.confirmation_expires_at, expires)
         snapshot.revision = request.revision
@@ -173,59 +251,77 @@ class ExecuteTaskSimulator(Node):
             request.dispatch_id,
         )
         try:
-            for index, step in enumerate(steps, 1):
-                snapshot.step = describe_step(index, len(steps), step)
-                self.publish(handle, snapshot, "[SIM] 正在模拟：" + snapshot.step)
-                deadline = time.monotonic() + self.step_seconds
-                last_feedback = time.monotonic()
-                while time.monotonic() < deadline:
+            last_tick = time.monotonic()
+            last_feedback = 0.0
+            last_step = ""
+            while True:
+                now = time.monotonic()
+                with self.lock:
                     if not self.context.ok() or self.shutdown_event.is_set():
-                        raise RuntimeError("模拟服务正在关闭，执行已停止")
-                    if handle.is_cancel_requested:
-                        snapshot.error_code = "CANCELED"
-                        self.publish(
-                            handle, snapshot, "模拟执行已取消", snapshot.CANCELED
+                        self.world.fail(
+                            "SIMULATOR_STOPPED", "模拟服务正在关闭，执行已停止"
                         )
-                        handle.canceled()
-                        result.error_code, result.message = "CANCELED", "模拟执行已取消"
-                        return self.finish(result, snapshot)
-                    if time.monotonic() - last_feedback >= 2.0:
-                        self.publish(
-                            handle, snapshot, "[SIM] 正在模拟：" + snapshot.step
+                    elif handle.is_cancel_requested:
+                        self.world.cancel()
+                    else:
+                        # Motion cannot jump after a stall; the watchdog still sees wall time.
+                        self.world.tick(
+                            min(0.1, now - last_tick), wall_dt=now - last_tick
                         )
-                        last_feedback = time.monotonic()
-                    self.shutdown_event.wait(
-                        min(0.02, max(0, deadline - time.monotonic()))
-                    )
-                # Check once more before applying the completed step's flags.
-                if handle.is_cancel_requested:
-                    snapshot.error_code = "CANCELED"
-                    self.publish(handle, snapshot, "模拟执行已取消", snapshot.CANCELED)
+                    frame = self.world.frame()
+                last_tick = now
+                if frame["state"] != "RUNNING":
+                    break
+                if frame["step"] != last_step or now - last_feedback >= 0.1:
+                    self.publish(handle, snapshot, "[SIM] " + frame["message"])
+                    if frame["step"] != last_step:
+                        self.get_logger().info(f"[SIM] 开始动作：{frame['step']}")
+                    last_step, last_feedback = frame["step"], now
+                self.shutdown_event.wait(0.02)
+            result.success = frame["state"] == "SUCCEEDED"
+            result.error_code, result.message = frame["error_code"], frame["message"]
+            state = {
+                "SUCCEEDED": snapshot.SUCCEEDED,
+                "CANCELED": snapshot.CANCELED,
+                "FAILED": snapshot.FAILED,
+            }[frame["state"]]
+            if self.context.ok():
+                self.publish(handle, snapshot, result.message, state)
+                if result.success:
+                    handle.succeed()
+                elif frame["state"] == "CANCELED":
                     handle.canceled()
-                    result.error_code, result.message = "CANCELED", "模拟执行已取消"
-                    return self.finish(result, snapshot)
-                if step[0] == "PICK":
-                    snapshot.pickup_completed = True
-                elif step[0] == "PLACE":
-                    snapshot.dropoff_completed = True
-                snapshot.progress = min(index / len(steps), 0.999)
-            snapshot.progress = 1.0
-            self.publish(handle, snapshot, "模拟执行完成", snapshot.SUCCEEDED)
-            handle.succeed()
-            result.success, result.message = True, "模拟执行完成"
+                else:
+                    handle.abort()
             return self.finish(result, snapshot)
         except Exception as exc:
-            result.error_code, result.message = "SIMULATOR_FAILED", str(exc)
-            snapshot.error_code = result.error_code
+            with self.lock:
+                self.world.fail("SIMULATOR_FAILED", str(exc))
+                frame = self.world.frame()
+            result.success = frame["state"] == "SUCCEEDED"
+            result.error_code, result.message = frame["error_code"], frame["message"]
             if self.context.ok():
-                self.publish(handle, snapshot, result.message, snapshot.FAILED)
-                handle.abort()
+                try:
+                    self.publish(handle, snapshot, result.message)
+                    if handle.is_active:
+                        if result.success:
+                            handle.succeed()
+                        elif frame["state"] == "CANCELED":
+                            handle.canceled()
+                        else:
+                            handle.abort()
+                except Exception as reporting_error:
+                    self.get_logger().error(
+                        f"[SIM] 终态发送失败，世界状态保留：{reporting_error}"
+                    )
             return self.finish(result, snapshot)
         finally:
             with self.lock:
                 self.active_dispatch, self.reserved = "", None
 
     def finish(self, result, snapshot):
+        with self.lock:
+            self.update_snapshot(snapshot, self.world.frame())
         result.stamp = self.get_clock().now().to_msg()
         result.task = deepcopy(snapshot)
         self.get_logger().info(f"[SIM] {result.message}；任务 {result.task_id}")

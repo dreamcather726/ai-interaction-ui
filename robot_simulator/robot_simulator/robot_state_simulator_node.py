@@ -1,4 +1,4 @@
-"""Patrol odometry, slowly discharging battery and explicitly simulated status."""
+"""Relay the scheduler's world to odometry/status; never invent independent motion."""
 
 import json
 import math
@@ -10,8 +10,7 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import BatteryState
 from std_msgs.msg import String
 
-from robot_simulator.common import run_node
-from robot_simulator.scene import STATIONS, patrol
+from robot_simulator.common import latched_qos, run_node
 
 
 class RobotStateSimulator(Node):
@@ -31,27 +30,104 @@ class RobotStateSimulator(Node):
             BatteryState, "/battery_state", qos_profile_sensor_data
         )
         self.status_pub = self.create_publisher(String, "/robot_status", 10)
+        self.subscription = self.create_subscription(
+            String, "/simulator/world_state", self.on_world, latched_qos()
+        )
+        self.world = None
+        self.last_world = 0.0
+        self.last_error_log = 0.0
         self.started = time.monotonic()
         self.timer = self.create_timer(0.1, self.publish)
-        self.get_logger().info("[SIM] 底盘巡航与电池状态已启动；没有真实运动输出")
+        self.get_logger().info(
+            "[SIM] 等待统一执行调度状态；里程计和物料状态不再独立巡航"
+        )
+
+    def on_world(self, message):
+        try:
+            frame = json.loads(message.data)
+            stamp = frame["stamp"]
+            if (
+                not isinstance(frame["boot_id"], str)
+                or not frame["boot_id"]
+                or not isinstance(frame["event_seq"], int)
+                or frame["event_seq"] < 1
+            ):
+                raise ValueError("世界状态来源或序号无效")
+            if (
+                not isinstance(stamp["sec"], int)
+                or stamp["sec"] < 0
+                or not isinstance(stamp["nanosec"], int)
+                or not 0 <= stamp["nanosec"] < 10**9
+            ):
+                raise ValueError("世界状态时间戳无效")
+            if any(
+                not isinstance(frame[key], (int, float))
+                or not math.isfinite(frame[key])
+                for key in ("x", "y", "yaw", "speed", "progress")
+            ):
+                raise ValueError("世界坐标、速度或进度无效")
+            if frame["state"] not in (
+                "IDLE",
+                "RUNNING",
+                "SUCCEEDED",
+                "FAILED",
+                "CANCELED",
+            ):
+                raise ValueError("世界状态无效")
+            if not isinstance(frame["objects"], list) or not isinstance(
+                frame["held_object_id"], str
+            ):
+                raise ValueError("物料状态无效")
+            for item in frame["objects"]:
+                if (
+                    not isinstance(item["id"], str)
+                    or not isinstance(item["station_id"], str)
+                    or not isinstance(item["carried"], bool)
+                    or any(
+                        not isinstance(item[key], (int, float))
+                        or not math.isfinite(item[key])
+                        for key in ("x", "y")
+                    )
+                ):
+                    raise ValueError("物料位置无效")
+            carried = [item["id"] for item in frame["objects"] if item["carried"]]
+            if carried != (
+                [frame["held_object_id"]] if frame["held_object_id"] else []
+            ):
+                raise ValueError("持物标识与物料位置不一致")
+            if (
+                self.world
+                and frame["boot_id"] == self.world["boot_id"]
+                and frame["event_seq"] <= self.world["event_seq"]
+            ):
+                return
+            self.world, self.last_world = frame, time.monotonic()
+        except (ValueError, TypeError, KeyError) as exc:
+            if time.monotonic() - self.last_error_log >= 2.0:
+                self.get_logger().warning(f"[SIM] 忽略无效调度状态：{exc}")
+                self.last_error_log = time.monotonic()
 
     def publish(self):
         elapsed = time.monotonic() - self.started
         stamp = self.get_clock().now().to_msg()
-        x, y, yaw, speed = patrol(elapsed)
-        odom = Odometry()
-        odom.header.stamp, odom.header.frame_id = stamp, "odom"
-        odom.child_frame_id = "base_link"
-        odom.pose.pose.position.x, odom.pose.pose.position.y = x, y
-        odom.pose.pose.orientation.z, odom.pose.pose.orientation.w = math.sin(
-            yaw / 2
-        ), math.cos(yaw / 2)
-        odom.twist.twist.linear.x = speed
-        odom.twist.twist.linear.y = 0.02 * math.cos(elapsed) * math.cos(yaw)
-        for index in (0, 7, 35):
-            odom.pose.covariance[index] = 0.002
-            odom.twist.covariance[index] = 0.001
-        self.odom_pub.publish(odom)
+        fresh = self.world is not None and time.monotonic() - self.last_world < 2.0
+        if self.world:
+            frame = self.world
+            odom = Odometry()
+            odom.header.frame_id, odom.child_frame_id = "odom", "base_link"
+            odom.header.stamp.sec = frame["stamp"]["sec"]
+            odom.header.stamp.nanosec = frame["stamp"]["nanosec"]
+            odom.pose.pose.position.x, odom.pose.pose.position.y = float(
+                frame["x"]
+            ), float(frame["y"])
+            odom.pose.pose.orientation.z, odom.pose.pose.orientation.w = math.sin(
+                frame["yaw"] / 2
+            ), math.cos(frame["yaw"] / 2)
+            odom.twist.twist.linear.x = float(frame["speed"]) if fresh else 0.0
+            for index in (0, 7, 35):
+                odom.pose.covariance[index] = 0.002
+                odom.twist.covariance[index] = 0.001
+            self.odom_pub.publish(odom)
         battery = BatteryState()
         battery.header.stamp = stamp
         battery.header.frame_id = "base_link"
@@ -67,21 +143,30 @@ class RobotStateSimulator(Node):
         battery.power_supply_technology = BatteryState.POWER_SUPPLY_TECHNOLOGY_LION
         self.battery_pub.publish(battery)
         self.battery_alias.publish(battery)
-        self.status_pub.publish(
-            String(
-                data=json.dumps(
-                    {
-                        "simulator": True,
-                        "stamp": {"sec": stamp.sec, "nanosec": stamp.nanosec},
-                        "chassis_ready": True,
-                        "camera_ready": True,
-                        "mode": "模拟巡航（独立于任务演示）",
-                        "stations": STATIONS,
-                    },
-                    ensure_ascii=False,
-                )
-            )
+        status = dict(self.world or {})
+        if self.world:
+            status["world_stamp"] = self.world["stamp"]
+        state_name = {
+            "IDLE": "待命",
+            "RUNNING": "执行中",
+            "SUCCEEDED": "已完成",
+            "FAILED": "失败",
+            "CANCELED": "已取消",
+        }.get(status.get("state"), "待命")
+        status.update(
+            simulator=True,
+            stamp={"sec": stamp.sec, "nanosec": stamp.nanosec},
+            speed=float(self.world["speed"]) if fresh else 0.0,
+            world_fresh=fresh,
+            chassis_ready=fresh and status.get("state") != "FAILED",
+            camera_ready=True,
+            mode=(
+                ("统一模拟执行 · " + state_name)
+                if fresh
+                else "调度状态未就绪／已失联，位置保留，速度归零"
+            ),
         )
+        self.status_pub.publish(String(data=json.dumps(status, ensure_ascii=False)))
 
 
 def main(args=None):

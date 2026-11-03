@@ -406,6 +406,9 @@ def build_progress(window):
         "任务 ID：待接入\n开始时间：待接入\n预计完成：待接入", "muted", True
     )
     info.body.addWidget(window.task_information)
+    if getattr(window.config, "use_simulator", False):
+        window.material_state_label = ElidedLabel("持有物料：等待反馈")
+        info.body.addWidget(window.material_state_label)
     info.body.addStretch()
     details.addWidget(current, 3)
     details.addWidget(info, 2)

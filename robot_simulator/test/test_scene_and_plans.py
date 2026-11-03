@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 import unittest
 
-from robot_simulator.plans import describe_step, expand_steps
+from robot_simulator.plans import describe_step, expand_steps, return_step_indices
 from robot_simulator.scene import occupancy_grid, patrol, rgb_frame
 
 
@@ -60,6 +60,7 @@ class SceneAndPlanTests(unittest.TestCase):
         self.assertEqual(len(expand_steps(plan)), 25)
         returning = candidate(return_required=True, return_station_id="station_a")
         self.assertEqual(expand_steps(returning)[-1], ("NAVIGATE", "station_a", ""))
+        self.assertEqual(return_step_indices(returning), {4})
         with self.assertRaises(ValueError):
             expand_steps(candidate(3, steps=[candidate() for _ in range(65)]))
 

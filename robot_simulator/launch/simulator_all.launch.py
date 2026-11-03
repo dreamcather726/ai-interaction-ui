@@ -13,6 +13,14 @@ def generate_launch_description():
         DeclareLaunchArgument("camera_height", default_value="480"),
         DeclareLaunchArgument("camera_fps", default_value="10.0"),
         DeclareLaunchArgument("step_seconds", default_value="2.0"),
+        DeclareLaunchArgument("linear_speed", default_value="0.8"),
+        DeclareLaunchArgument("step_timeout", default_value="60.0"),
+        DeclareLaunchArgument("fail_step", default_value="0"),
+        DeclareLaunchArgument(
+            "stations_json",
+            default_value='{"station_a":[-2.0,0.0],"station_b":[2.0,0.0]}',
+        ),
+        DeclareLaunchArgument("objects_json", default_value='{"box_1":"station_a"}'),
     ]
     camera = {
         name: ParameterValue(LaunchConfiguration(argument), value_type=kind)
@@ -33,7 +41,22 @@ def generate_launch_description():
             {
                 "step_seconds": ParameterValue(
                     LaunchConfiguration("step_seconds"), value_type=float
-                )
+                ),
+                "linear_speed": ParameterValue(
+                    LaunchConfiguration("linear_speed"), value_type=float
+                ),
+                "step_timeout": ParameterValue(
+                    LaunchConfiguration("step_timeout"), value_type=float
+                ),
+                "fail_step": ParameterValue(
+                    LaunchConfiguration("fail_step"), value_type=int
+                ),
+                "stations_json": ParameterValue(
+                    LaunchConfiguration("stations_json"), value_type=str
+                ),
+                "objects_json": ParameterValue(
+                    LaunchConfiguration("objects_json"), value_type=str
+                ),
             },
         ),
         ("play_audio_action_server", "play_audio_action_server", {}),

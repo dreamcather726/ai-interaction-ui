@@ -28,9 +28,13 @@ A=(-2,0)、B=(2,0)，不代表现有资料库里的真实位置。
 
 在“任务管理”手动添加 NAVIGATE A → PICK box_1 @ A → NAVIGATE B → PLACE box_1 @ B，
 保存后点击“确认并模拟执行”。回到首页观察当前动作、右侧状态和执行进度。
-动作数量来自已确认的草稿（最多 256 步），默认每步 2 秒；不会固定成六步或
-使用 ASR 阶段冒充执行进度。点击“取消模拟执行”会请求取消，等待服务端终态。
-取消、超时、失败不会自动重新发送；再次演示请修改并保存新草稿版本。
+动作数量来自已确认的草稿（最多 256 步）。NAVIGATE 按距离和速度移动，到站后才成功；
+PICK / PLACE 默认耗时 2 秒，完成后才改变持物及物料位置。位置、物料和执行反馈
+来自同一个状态机，进度按已完成动作及当前动作进展计算。取消、超时、失败后立即
+停止后续动作，速度归零，保留当前位置、持物状态和最后进度；不会自动重发。
+默认初始位置 (0,0)，box_1 位于 station_a。完成后物料留在 station_b，下次应按
+实际位置编排 B→A 的搬运；不会把物料自动移回 A。重启执行节点会重置模拟场景，
+并丢失内存中的 PrepareTask 记录。再次演示仍须保存并确认新草稿版本。
 
 仅在 use_simulator=true 时启用画面订阅和模拟执行客户端。界面始终调用
 /simulator/task/prepare 与 /simulator/task/execute，避免向真实 /task/execute 发任务。
@@ -94,9 +98,10 @@ ROS 图中的地图、相机、底盘节点分别命名为 /map、/camera/camera
 | /map | nav_msgs/OccupancyGrid；200×200、0.05m/cell、原点(-5,-5)，可靠/TransientLocal/1 |
 | /map_metadata | nav_msgs/MapMetaData；同样可靠/TransientLocal/1 |
 | /camera/image_raw | sensor_msgs/Image；rgb8，默认640×480、10fps，时间文字与移动圆点；SensorData QoS |
-| /odom | nav_msgs/Odometry；odom → base_link，A/B之间模拟巡航；SensorData QoS |
+| /odom | nav_msgs/Odometry；odom → base_link，转发统一调度的实际模拟位置/速度；SensorData QoS |
 | /battery、/battery_state | sensor_msgs/BatteryState；100%缓慢降至20%，电压/电流有波动；SensorData QoS |
-| /robot_status | std_msgs/String；JSON，simulator=true、时间、底盘/相机状态；不模拟网络 |
+| /robot_status | std_msgs/String；JSON，底盘/相机、持有物料、各物料位置和调度新鲜度；不模拟网络 |
+| /simulator/world_state | std_msgs/String；执行节点唯一发布的世界状态，包含位置、物料、任务步骤和进度；可靠/TransientLocal/1 |
 | /task/prepare、/simulator/task/prepare | robot_interfaces/PrepareTask；先传入完整TaskSpec，纯内存保存 |
 | /task/execute、/simulator/task/execute | robot_interfaces/ExecuteTask；串行动作反馈、完成与取消 |
 | /task/snapshot、/simulator/task/snapshot | robot_interfaces/TaskSnapshot；模拟步骤和进度 |
@@ -108,7 +113,40 @@ ExecuteTask.Goal 本身没有步骤数组，因此须先 PrepareTask，再按响
 confirmation_context_id 和有效时间发送 ExecuteTask。动作序号/总数/描述在 Feedback.task.step，
 进度在 Feedback.task.progress（0～1）；没有改动现有 Action 定义。
 模拟准备记录只在内存中保留，重启后应重新准备；这不是生产调度器或真实机器人授权服务。
-底盘巡航与任务步骤为独立演示，不宣称已经完成实际导航、目标识别或抓取。
+底盘状态节点只转发世界状态；超过 2 秒未收到新状态时标记未就绪、速度归零，保留
+最后已知位置。没有独立巡航。此处为二维直线运动及抓放状态模拟，未实现真实导航
+避障、视觉目标识别或机械臂控制，不发布任何真实硬件控制指令。
+
+## 统一调度的配置与自测
+
+默认地图工位为 station_a=(-2,0)、station_b=(2,0)，默认物料 box_1 在 station_a。
+上位机资料的 ID 与模拟场景 ID 需要一致；模型解析成功不代表模拟世界中存在该物料。
+未知工位、物料位置不匹配、未到站就抓放、已持物又抓取、未持物就放下都会被拒绝。
+
+可先在独立终端启动一组模拟节点，再开工作台，它会沿用外部节点：
+
+```bash
+# 正常执行：导航0.8m/s，抓放各2秒，每个步骤最多60秒。
+ros2 launch robot_simulator simulator_all.launch.py linear_speed:=0.8 step_seconds:=2.0 step_timeout:=60.0
+# 故障场景（与上一条二选一）：第3步失败，不继续第4步；已抓物料仍然持有。
+ros2 launch robot_simulator simulator_all.launch.py fail_step:=3
+```
+
+需要自定义场景时，向 launch 传入 stations_json 和 objects_json，例如：
+
+```bash
+ros2 launch robot_simulator simulator_all.launch.py \
+  stations_json:='{"station_a":[-2.0,0.0],"station_b":[2.0,0.0],"station_c":[0.0,1.0]}' \
+  objects_json:='{"box_1":"station_a","box_2":"station_b"}'
+```
+
+坐标须在[-4.5,4.5]内；模型是直线插值，不检查地图障碍。修改场景参数后重新启动
+模拟节点；不要同时启动多组。地图背景中的A/B栅格字母是默认场景标记，界面叠加的
+工位点和物料点按配置显示。动作会按当前场景预检，执行前再次校验，且各步完成才推进。
+
+手动验收正常四步：到A前不能持有箱子；抓取完成后箱子随机器人移动；到B后放下才
+清除持物状态并达到100%。导航中取消应停在途中；抓取未完成时取消不能报告已抓取；
+fail_step=3 时应停在第3步、保留已抓物料，最后放下步骤不执行。
 
 ```bash
 ros2 node list
@@ -128,4 +166,5 @@ rqt_graph
 
 如需自行运行测试：`colcon test --packages-select robot_simulator`，随后执行
 `colcon test-result --verbose`。纯数据测试覆盖地图形状、RGB尺寸/变化、搬运动作展开、
-可变长度、返回动作、过长与不完整任务拒绝；ROS/Qt联调仍需在实际Humble环境验收。
+可变长度、返回动作、过长与不完整任务拒绝，以及统一执行模型的位置/持物联动、
+取消、故障、步骤超时、跨任务物料状态保留；ROS/Qt联调仍需在实际Humble环境验收。
