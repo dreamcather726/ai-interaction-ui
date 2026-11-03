@@ -495,6 +495,48 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(window.map_view.image.isNull())
         self.assertIn("82%", window.hardware_labels["电池电量"].text())
         self.assertEqual(window.history.count(), 0)
+        # Telemetry arrives while the navigation pages are hidden, including a
+        # map published only once. Entering each page must display its cache.
+        self.assertIsNot(window.map_view, window.map_page_view)
+        self.assertIsNot(window.camera_view, window.camera_page_view)
+        for title, view in (
+            ("地图与定位", window.map_page_view),
+            ("相机图像", window.camera_page_view),
+        ):
+            window.switch_page(window.page_indexes[title])
+            self.app.processEvents()
+            self.assertTrue(view.isVisible())
+            self.assertFalse(view.image.isNull())
+            self.assertFalse(view.pixmap().isNull())
+        window.switch_page(window.page_indexes["机器人状态"])
+        self.app.processEvents()
+        window.receive_record(
+            "sim_status",
+            {
+                "camera_ready": True,
+                "chassis_ready": True,
+                "network_connected": True,
+                "network_latency_ms": 8.2,
+                "ip": "127.0.0.1",
+                "mode": "模拟巡航",
+            },
+        )
+        self.assertIn("82%", window.hardware_page_labels["电池电量"].text())
+        self.assertIn("-2.00", window.hardware_page_labels["机器人状态"].text())
+        self.assertIn("rgb8", window.hardware_page_labels["相机状态"].text())
+        self.assertIn("8.2", window.hardware_page_labels["网络连接"].text())
+        self.assertEqual(window.robot_page_battery.value(), 82)
+        window.receive_record("sim_battery", {"percentage": 0.63, "voltage": 24.0})
+        self.assertEqual(
+            window.hardware_labels["电池电量"].text(),
+            window.hardware_page_labels["电池电量"].text(),
+        )
+        self.assertEqual(window.robot_page_battery.value(), 63)
+        self.assertFalse(window.pages.findChildren(QScrollArea))
+        window.switch_page(window.page_indexes["首页"])
+        self.app.processEvents()
+        self.assertTrue(window.map_view.isVisible())
+        self.assertTrue(window.camera_view.isVisible())
         window.receive_record(
             "sim_task",
             {
@@ -506,6 +548,7 @@ class WindowTests(unittest.TestCase):
             },
         )
         self.assertEqual(window.stage_progress.value(), 25)
+        self.assertIn("sim-one", window.hardware_page_labels["当前任务"].text())
         sent = []
         window.draft_requested.connect(lambda operation, _: sent.append(operation))
         QTest.mouseClick(window.cancel_simulation_button, Qt.MouseButton.LeftButton)

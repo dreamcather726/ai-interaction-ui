@@ -91,6 +91,64 @@ def placeholder(title, text=None):
     return card
 
 
+def build_device_page(window, kind):
+    """Independent views of the same telemetry; never move homepage widgets."""
+    titles = {"map": "地图与定位", "robot": "机器人状态", "camera": "相机图像"}
+    title = titles[kind]
+    if not getattr(window.config, "use_simulator", False):
+        return placeholder(title, "地图模块待接入" if kind == "map" else None)
+    if kind == "robot":
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(label("机器人状态 · SIM 模拟数据", "section"))
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        window.hardware_page_labels = {}
+        for index, name in enumerate(
+            ("机器人状态", "底盘状态", "相机状态", "电池电量", "网络连接", "当前任务")
+        ):
+            card = compact_card(name)
+            field = label(
+                "等待模拟消息" if name != "当前任务" else "尚无模拟执行任务",
+                "muted",
+                True,
+            )
+            field.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            window.hardware_page_labels[name] = field
+            card.body.addWidget(field)
+            if name == "电池电量":
+                window.robot_page_battery = QProgressBar()
+                window.robot_page_battery.setRange(0, 100)
+                window.robot_page_battery.setValue(0)
+                window.robot_page_battery.setFormat("等待电池消息")
+                card.body.addWidget(window.robot_page_battery)
+            card.body.addStretch()
+            grid.addWidget(card, index // 2, index % 2)
+        for column in (0, 1):
+            grid.setColumnStretch(column, 1)
+        for row in range(3):
+            grid.setRowStretch(row, 1)
+        layout.addLayout(grid, 1)
+        return page
+
+    from robot_visualization.ui.simulation import SimulationImage
+
+    card = compact_card(title, "SIM 模拟数据 · 与首页共享消息，切页保留最新画面")
+    view = SimulationImage(
+        "等待 /map 地图消息" if kind == "map" else "等待 /camera/image_raw 图像消息"
+    )
+    view.setObjectName("mapPlaceholder" if kind == "map" else "videoPlaceholder")
+    info = ElidedLabel("等待模拟地图与定位" if kind == "map" else "等待模拟相机画面")
+    if kind == "map":
+        window.map_page_view, window.map_page_info = view, info
+    else:
+        window.camera_page_view, window.camera_page_info = view, info
+    card.body.addWidget(view, 1)
+    card.body.addWidget(info)
+    return card
+
+
 def build_monitor_layout(window):
     canvas = QFrame()
     canvas.setObjectName("monitorCanvas")
@@ -110,10 +168,10 @@ def build_monitor_layout(window):
     window.page_indexes = {name: index for index, (name, _) in enumerate(NAVIGATION)}
     for page in (
         build_home(window),
-        placeholder("地图与定位", "地图模块待接入"),
-        placeholder("机器人状态"),
+        build_device_page(window, "map"),
+        build_device_page(window, "robot"),
         build_drafts(window),
-        placeholder("相机图像"),
+        build_device_page(window, "camera"),
         build_log_analysis(window),
         build_settings(window),
     ):

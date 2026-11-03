@@ -20,7 +20,7 @@ class SimulationImage(QLabel):
         self.refresh()
 
     def refresh(self):
-        if not self.image.isNull():
+        if not self.image.isNull() and self.isVisible():
             self.setPixmap(
                 QPixmap.fromImage(self.image).scaled(
                     self.contentsRect().size(),
@@ -33,12 +33,18 @@ class SimulationImage(QLabel):
         super().resizeEvent(event)
         self.refresh()
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh()
+
 
 class SimulationView:
     def __init__(self, window):
         self.window = window
         self.map = None
         self.odom = None
+        self.status = {}
+        self.camera_size = None
         self.task = {}
         window.setWindowTitle(window.windowTitle() + " · SIM 模拟模式")
         window.system_badge.update_status("● SIM 模拟模式", "warn")
@@ -56,15 +62,16 @@ class SimulationView:
         if kind == "sim_camera":
             width, height, stride = value["width"], value["height"], value["step"]
             if width > 0 and height > 0 and len(value["data"]) >= stride * height:
-                window.camera_view.set_image(
-                    QImage(
-                        value["data"],
-                        width,
-                        height,
-                        stride,
-                        QImage.Format.Format_RGB888,
-                    )
+                image = QImage(
+                    value["data"], width, height, stride, QImage.Format.Format_RGB888
                 )
+                for view in (window.camera_view, window.camera_page_view):
+                    view.set_image(image)
+                self.camera_size = (width, height)
+                window.camera_page_info.setText(
+                    f"SIM /camera/image_raw · {width} × {height} · rgb8"
+                )
+                self.render_camera_status()
         elif kind == "sim_map":
             width, height = value["width"], value["height"]
             if (
@@ -89,32 +96,59 @@ class SimulationView:
                 self.paint_map()
         elif kind == "sim_odom":
             self.odom = value
-            window.hardware_labels["机器人状态"].setText(
-                f"SIM 位置 ({value['x']:.2f}, {value['y']:.2f}) m\n线速度 {value['speed']:.2f} m/s\n角速度 {value['angular']:.2f} rad/s"
+            self.set_hardware_text(
+                "机器人状态",
+                f"SIM 位置 ({value['x']:.2f}, {value['y']:.2f}) m\n线速度 {value['speed']:.2f} m/s\n角速度 {value['angular']:.2f} rad/s",
             )
-            window.hardware_labels["底盘状态"].setText(
-                f"SIM 演示巡航\n速度 {value['speed']:.2f} m/s\n独立于任务步骤演示，无真实运动"
-            )
+            self.render_chassis()
             self.paint_map()
         elif kind == "sim_battery":
             percentage, voltage = value["percentage"], value["voltage"]
             if math.isfinite(percentage) and math.isfinite(voltage):
-                window.hardware_labels["电池电量"].setText(
-                    f"SIM 电量 {percentage * 100:.0f}%\n电压 {voltage:.2f} V"
+                self.set_hardware_text(
+                    "电池电量",
+                    f"SIM 电量 {percentage * 100:.0f}%\n电压 {voltage:.2f} V",
                 )
+                window.robot_page_battery.setValue(
+                    round(max(0, min(1, percentage)) * 100)
+                )
+                window.robot_page_battery.setFormat("SIM 电量 %p%")
         elif kind == "sim_status":
+            self.status = value
             connected = "已连接" if value.get("network_connected") else "未连接"
-            window.hardware_labels["网络连接"].setText(
-                f"SIM 网络{connected}\nIP {value.get('ip', '—')}\n延迟 {value.get('network_latency_ms', '—')} ms"
+            self.set_hardware_text(
+                "网络连接",
+                f"SIM 网络{connected}\nIP {value.get('ip', '—')}\n延迟 {value.get('network_latency_ms', '—')} ms",
             )
-            window.camera_view.setToolTip(
-                "SIM 摄像头：" + ("就绪" if value.get("camera_ready") else "未就绪")
-            )
+            self.render_chassis()
+            self.render_camera_status()
         elif kind == "sim_task":
             if value.get("task_id") and value["task_id"] != self.task.get("task_id"):
                 self.task = {}
             self.task.update(value)
             self.render_task()
+
+    def set_hardware_text(self, name, text):
+        for fields in (self.window.hardware_labels, self.window.hardware_page_labels):
+            if name in fields:
+                fields[name].setText(text)
+
+    def render_chassis(self):
+        ready = "就绪" if self.status.get("chassis_ready") else "等待状态"
+        speed = f"{self.odom['speed']:.2f} m/s" if self.odom else "等待里程计"
+        mode = self.status.get("mode", "等待运行模式")
+        self.set_hardware_text("底盘状态", f"SIM 底盘{ready}\n速度 {speed}\n{mode}")
+
+    def render_camera_status(self):
+        ready = "就绪" if self.status.get("camera_ready") else "等待状态"
+        frame = (
+            f"{self.camera_size[0]} × {self.camera_size[1]} · rgb8"
+            if self.camera_size
+            else "等待图像消息"
+        )
+        self.set_hardware_text("相机状态", f"SIM 相机{ready}\n{frame}")
+        for view in (self.window.camera_view, self.window.camera_page_view):
+            view.setToolTip(f"SIM 摄像头：{ready}；{frame}")
 
     def paint_map(self):
         if self.map is None:
@@ -141,7 +175,16 @@ class SimulationView:
             painter.setBrush(QColor("#2479e8"))
             painter.drawEllipse(point(self.odom["x"], self.odom["y"]), 7, 7)
         painter.end()
-        self.window.map_view.set_image(image)
+        for view in (self.window.map_view, self.window.map_page_view):
+            view.set_image(image)
+        position = (
+            f"位置 ({self.odom['x']:.2f}, {self.odom['y']:.2f}) m"
+            if self.odom
+            else "等待 /odom 定位"
+        )
+        self.window.map_page_info.setText(
+            f"SIM /map · {metadata['width']} × {metadata['height']} 栅格 · {metadata['resolution']:g} m/格 · {position}"
+        )
 
     def render_task(self):
         task, window = self.task, self.window
@@ -164,8 +207,14 @@ class SimulationView:
         window.task_information.setText(
             "SIM 任务 ID：" + task.get("task_id", "准备中") + "\n当前动作：" + step
         )
-        window.hardware_labels["当前任务"].setText(
-            "SIM " + ("执行中" if active else "已停止") + "\n" + step
+        self.set_hardware_text(
+            "当前任务",
+            "SIM "
+            + ("执行中" if active else "已停止")
+            + "\n"
+            + task.get("task_id", "准备中")
+            + "\n"
+            + step,
         )
         window.task_badge.update_status(
             "● SIM 任务执行中" if active else "● SIM 任务已停止",
