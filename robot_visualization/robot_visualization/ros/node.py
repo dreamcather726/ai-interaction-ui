@@ -42,7 +42,9 @@ class DashboardNode(Node):
             from robot_visualization.ros.simulation import SimulationClient
 
             self.simulation = SimulationClient(self, events)
-        audio_namespace = "/simulator/audio" if self.config.use_simulator else "/audio"
+        audio_namespace = (
+            "/simulator/audio" if self.config.use_fake_microphone else "/audio"
+        )
         self.start_client = self.create_client(
             Trigger, audio_namespace + "/start_recording"
         )
@@ -90,7 +92,12 @@ class DashboardNode(Node):
         if (
             self.config.use_simulator
             and message.component_id == "microphone"
-            and message.source_node.rsplit("/", 1)[-1] != "fake_microphone_sender"
+            and message.source_node.rsplit("/", 1)[-1]
+            != (
+                "fake_microphone_sender"
+                if self.config.use_fake_microphone
+                else "microphone_sender_node"
+            )
         ):
             return
         if message.component_id in ("asr", "microphone", "parser"):

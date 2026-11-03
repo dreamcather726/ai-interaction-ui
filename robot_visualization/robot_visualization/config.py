@@ -28,6 +28,10 @@ class DashboardConfig:
     use_simulator: bool = False
     simulator_audio_file: str = ""
 
+    @property
+    def use_fake_microphone(self):
+        return self.use_simulator and bool(self.simulator_audio_file)
+
     @classmethod
     def from_node(cls, node):
         model = default_model_path()

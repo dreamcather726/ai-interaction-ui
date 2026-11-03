@@ -140,23 +140,25 @@ class BackendSupervisor:
                     ["ros2", "launch", "robot_simulator", "simulator_all.launch.py"],
                 )
             )
-            audio_file = getattr(c, "simulator_audio_file", "")
-            if audio_file:
-                plans.append(
-                    (
+        audio_file = (
+            getattr(c, "simulator_audio_file", "")
+            if getattr(c, "use_simulator", False)
+            else ""
+        )
+        if audio_file:
+            plans.append(
+                (
+                    "fake_microphone_sender",
+                    ros_command(
+                        "robot_simulator",
                         "fake_microphone_sender",
-                        ros_command(
-                            "robot_simulator",
-                            "fake_microphone_sender",
-                            {
-                                "wav_file": str(
-                                    Path(audio_file).expanduser().resolve()
-                                ),
-                                "auto_play": False,
-                            },
-                        ),
-                    )
+                        {
+                            "wav_file": str(Path(audio_file).expanduser().resolve()),
+                            "auto_play": False,
+                        },
+                    ),
                 )
+            )
         elif c.start_microphone:
             plans.append(
                 (
@@ -238,6 +240,15 @@ class BackendSupervisor:
             "DEBUG",
         )
         self.ensure_ollama()
+        if getattr(self.config, "use_simulator", False):
+            self.emit(
+                (
+                    "模拟场景音频来源：WAV 回放"
+                    if getattr(self.config, "simulator_audio_file", "")
+                    else "模拟场景音频来源：真实麦克风；使用设备录音服务"
+                ),
+                "INFO",
+            )
         for name, command in self.plans():
             if name == "robot_simulator":
                 simulated = {

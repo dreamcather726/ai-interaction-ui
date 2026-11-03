@@ -17,7 +17,8 @@ ros2 run --prefix /usr/bin/python3 robot_visualization dashboard --ros-args -p u
 ```
 
 此命令自动启动模拟地图、相机、底盘、电池和两个 Action 服务端，保留现有
-ASR、语义解析、草稿服务。默认不启动真实麦克风。ASR/FunASR、本地模型和
+ASR、语义解析、草稿服务，并默认启动真实 microphone_sender_node 供你直接录音。
+地图、相机、底盘和任务执行仍使用模拟器。ASR/FunASR、本地模型和
 Ollama 仍需要原来的依赖；模拟器不伪造 ASR 或 LLM 结果。
 不传 use_simulator（默认 false）时保留原来的真实硬件启动行为。
 
@@ -33,8 +34,13 @@ A=(-2,0)、B=(2,0)，不代表现有资料库里的真实位置。
 
 仅在 use_simulator=true 时启用画面订阅和模拟执行客户端。界面始终调用
 /simulator/task/prepare 与 /simulator/task/execute，避免向真实 /task/execute 发任务。
-录音控制同样使用 /simulator/audio/start_recording 和 /simulator/audio/stop_recording；
-模拟模式忽略真实麦克风的就绪广播，不会因为外部真实采集节点在线而启用真实录音。
+默认录音控制使用真实 /audio/start_recording 和 /audio/stop_recording，沿用 device、
+max_recording_seconds 参数。等待麦克风及 ASR 就绪后点击“开始录音”，说完点击
+“停止并识别”，即可走真实语音输入 → 候选 → 草稿 → 模拟执行。
+传入 simulator_audio_file 时改用 WAV 回放及 /simulator/audio/ 下的控制服务，
+不再启动真实麦克风；状态广播只接受当前选中的音频来源。
+如果需要关闭真实麦克风的自动启动，传 -p start_microphone:=false；仍可连接外部
+已启动的真实录音节点，或只使用手动编排。
 同一模拟节点已在外部运行时沿用外部节点，关闭窗口时保留；不完整的一组外部节点
 会报告错误并跳过整组启动，防止重复节点。请先关闭残留节点或补齐启动。
 
@@ -51,7 +57,7 @@ ros2 run --prefix /usr/bin/python3 robot_visualization dashboard --ros-args \
 
 等待模型和模拟麦克风就绪后点击“开始录音”；回放按 0.5 秒读取，文件结束自动
 发送，也可点击“停止并识别”。随后走真实 ASR → 语义解析 → 候选 → 草稿流程。
-未指定 WAV 时依然能手动编排、确认并模拟执行；录音控件会等待麦克风，不会假装就绪。
+未指定 WAV 时默认使用真实麦克风，也能手动编排、确认并模拟执行。
 需要别的回答内容时，用另一份 WAV 重启回放节点，不会把固定录音转换成虚构追问回答。
 
 当前真实协议是 /audio/segments（robot_interfaces/AudioSegment），每条代表完整录音。
@@ -72,6 +78,8 @@ ros2 launch robot_simulator simulator_with_fake_audio.launch.py \
 
 不要同时执行上述两种独立启动命令，二选一即可。独立 launch 不启动 AI 处理链，
 完整语音处理需再启动工作台 use_simulator=true；它会发现并沿用这组外部模拟节点。
+若外部启动的是含 WAV 回放的 launch，工作台也须传入相同的 simulator_audio_file
+参数选择回放来源，避免同时启用真实麦克风。
 可用单独的 ROS_DOMAIN_ID 区分模拟图和真实机器人图；所有相关终端需设置相同的值。
 
 ## 消息与验收

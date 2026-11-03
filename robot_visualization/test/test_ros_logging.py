@@ -4,6 +4,7 @@ import importlib.util
 import time
 import tempfile
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from pathlib import Path
@@ -49,6 +50,29 @@ class ConsoleStatusTests(unittest.TestCase):
     def tearDown(self):
         self.node.close()
         self.node.destroy_node()
+
+    def test_simulated_scene_accepts_only_selected_microphone_health(self):
+        self.node.config = replace(self.node.config, use_simulator=True)
+        self.assertFalse(self.node.config.use_fake_microphone)
+        status = ComponentStatus()
+        status.component_id = "microphone"
+        status.state = status.READY
+        status.source_node = "/fake_microphone_sender"
+        self.node.on_component(status)
+        self.assertNotIn("microphone", self.node.components)
+        status.source_node = "/microphone_sender_node"
+        self.node.on_component(status)
+        self.assertIn("microphone", self.node.components)
+        self.node.components.clear()
+        self.node.config = replace(
+            self.node.config, simulator_audio_file="/tmp/command.wav"
+        )
+        self.assertTrue(self.node.config.use_fake_microphone)
+        self.node.on_component(status)
+        self.assertNotIn("microphone", self.node.components)
+        status.source_node = "/fake_microphone_sender"
+        self.node.on_component(status)
+        self.assertIn("microphone", self.node.components)
 
     def test_poll_logs_only_changes_and_reports_lost_component(self):
         now = time.monotonic()

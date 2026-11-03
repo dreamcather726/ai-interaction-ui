@@ -158,7 +158,7 @@ class SupervisorRulesTests(unittest.TestCase):
         args = plans["audio_processing_node"]
         self.assertFalse(any("allowed_station_ids" in item for item in args))
 
-    def test_simulation_is_opt_in_and_replaces_only_hardware_microphone(self):
+    def test_simulation_keeps_real_microphone_unless_wav_selected(self):
         config = SimpleNamespace(
             audio_root=Path("/tmp/audio"),
             model_path="model",
@@ -168,13 +168,18 @@ class SupervisorRulesTests(unittest.TestCase):
             stations=[],
             objects=[],
             start_microphone=True,
+            device="@DEFAULT_SOURCE@",
         )
         real = dict(BackendSupervisor(config).plans())
         self.assertIn("microphone_sender_node", real)
         self.assertNotIn("robot_simulator", real)
         config.use_simulator = True
         simulated = dict(BackendSupervisor(config).plans())
-        self.assertNotIn("microphone_sender_node", simulated)
+        self.assertIn("microphone_sender_node", simulated)
+        self.assertNotIn("fake_microphone_sender", simulated)
+        self.assertEqual(
+            real["microphone_sender_node"], simulated["microphone_sender_node"]
+        )
         self.assertEqual(
             simulated["robot_simulator"],
             ["ros2", "launch", "robot_simulator", "simulator_all.launch.py"],
@@ -187,6 +192,11 @@ class SupervisorRulesTests(unittest.TestCase):
             "task_draft_node",
         ):
             self.assertEqual(real[name], simulated[name])
+        config.start_microphone = False
+        disabled = dict(BackendSupervisor(config).plans())
+        self.assertNotIn("microphone_sender_node", disabled)
+        self.assertNotIn("fake_microphone_sender", disabled)
+        config.start_microphone = True
         config.simulator_audio_file = "/tmp/recording.wav"
         replay = dict(BackendSupervisor(config).plans())
         self.assertIn("fake_microphone_sender", replay)
