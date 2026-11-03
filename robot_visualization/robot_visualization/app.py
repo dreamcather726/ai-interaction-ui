@@ -64,8 +64,10 @@ def main(args=None):
     # Qt 主线程接管窗口退出；工作线程完成清理后再销毁 ROS 上下文。
     signal.signal(signal.SIGINT, lambda signum, frame: window.close())
     signal.signal(signal.SIGTERM, lambda signum, frame: window.close())
-    window.show()
-    console_log("工作台窗口已打开，正在启动后台；等待设备与 ASR 模型就绪")
+    window.showFullScreen()
+    console_log(
+        "工作台窗口已全屏打开（F11 切换全屏，Esc 退出），正在启动后台；等待设备与 ASR 模型就绪"
+    )
     worker.start()
     try:
         app.exec()

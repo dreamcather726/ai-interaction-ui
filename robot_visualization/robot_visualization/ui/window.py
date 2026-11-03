@@ -51,7 +51,7 @@ class DashboardWindow(QMainWindow):
         self.can_close = False
         self.closing = False
         self.setWindowTitle("机器人可视化与监控平台 · 三栏监控版")
-        # 默认1440×900；较小屏幕为标题栏和边框预留空间。
+        # 普通窗口大小为1440×900；应用入口默认全屏，F11可恢复普通窗口。
         available = self.screen().availableGeometry()
         width = max(1, available.width() - 32)
         height = max(1, available.height() - 48)
@@ -76,6 +76,8 @@ class DashboardWindow(QMainWindow):
         for key, callback in (
             ("Alt+R", self.start_recording),
             ("Alt+S", self.stop_recording),
+            ("F11", self.toggle_fullscreen),
+            ("Esc", self.close),
         ):
             shortcut = QShortcut(QKeySequence(key), self)
             shortcut.activated.connect(callback)
@@ -83,6 +85,13 @@ class DashboardWindow(QMainWindow):
 
     def build_ui(self):
         build_monitor_layout(self)
+
+    @Slot()
+    def toggle_fullscreen(self):
+        if self.isFullScreen():
+            self.showNormal()
+        else:
+            self.showFullScreen()
 
     @Slot(int)
     def switch_page(self, index):
