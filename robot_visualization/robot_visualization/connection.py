@@ -16,7 +16,7 @@ class RobotConnection:
     map_topic: str = "/map"
     camera_topic: str = "/camera/image_raw"
     odom_topic: str = "/odom"
-    battery_topic: str = "/battery"
+    battery_topic: str = "/battery_state"
     executor_node: str = "/execute_task_action_server"
     response_timeout: float = 5.0
     heartbeat_timeout: float = 5.0

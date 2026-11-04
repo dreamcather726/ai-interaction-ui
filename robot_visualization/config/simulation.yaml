@@ -17,7 +17,7 @@
     robot_map_topic: /map
     robot_camera_topic: /camera/image_raw
     robot_odom_topic: /odom
-    robot_battery_topic: /battery
+    robot_battery_topic: /battery_state
     robot_response_timeout: 5.0
     robot_heartbeat_timeout: 5.0
     robot_cancel_timeout: 5.0

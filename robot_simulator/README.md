@@ -154,7 +154,7 @@ ROS 图中的地图、相机、底盘节点分别命名为 /map、/camera/camera
 | /map_metadata | nav_msgs/MapMetaData；同样可靠/TransientLocal/1 |
 | /camera/image_raw | sensor_msgs/Image；rgb8，默认640×480、10fps，时间文字与移动圆点；SensorData QoS |
 | /odom | nav_msgs/Odometry；odom → base_link，转发统一调度的实际模拟位置/速度；SensorData QoS |
-| /battery、/battery_state | sensor_msgs/BatteryState；100%缓慢降至20%，电压/电流有波动；SensorData QoS |
+| /battery_state（兼容 /battery） | sensor_msgs/BatteryState；上位机统一订阅 /battery_state；100%缓慢降至20%，电压/电流有波动；SensorData QoS |
 | /robot_status | std_msgs/String；旧内部兼容JSON，上位机不再消费；不模拟网络 |
 | /robot/status、/robot/heartbeat | robot_interfaces/RobotStatus、NodeHeartbeat；独立业务状态与活性，2Hz |
 | /robot/material_state | robot_interfaces/MaterialState；类型化持物及物料位置，10Hz |
@@ -214,7 +214,7 @@ ros2 node list
 ros2 topic list -t
 ros2 topic echo /map_metadata --qos-durability transient_local --once
 ros2 topic hz /camera/image_raw
-ros2 topic echo /battery --qos-reliability best_effort --once
+ros2 topic echo /battery_state --qos-reliability best_effort --once
 ros2 topic echo /robot_status --once
 ros2 action list -t
 rqt_graph
