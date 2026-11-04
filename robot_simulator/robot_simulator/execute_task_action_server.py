@@ -10,9 +10,17 @@ from uuid import uuid4
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
+from action_msgs.srv import CancelGoal
 from robot_interfaces.action import ExecuteTask
-from robot_interfaces.msg import TaskSnapshot
-from robot_interfaces.srv import PrepareTask
+from robot_interfaces.msg import (
+    DispatchReport,
+    MaterialLocation,
+    MaterialState,
+    NodeHeartbeat,
+    RobotStatus,
+    TaskSnapshot,
+)
+from robot_interfaces.srv import CancelTask, PrepareTask, QueryTask
 from std_msgs.msg import String
 
 from robot_simulator.common import latched_qos, run_node, set_time, time_ns
@@ -67,11 +75,36 @@ class ExecuteTaskSimulator(Node):
         self.active_dispatch = ""
         self.reserved = None
         self.sequence = 0
+        self.revision_counter = 0
+        self.task_records = {}
+        self.dispatch_records = {}
+        self.active_goal = None
+        self.started = time.monotonic()
+        self.last_public_status = 0.0
         self.world_publisher = self.create_publisher(
             String, "/simulator/world_state", latched_qos()
         )
         self.world_timer = self.create_timer(0.1, self.publish_world)
         self.group = ReentrantCallbackGroup()
+        self.status_publisher = self.create_publisher(RobotStatus, "/robot/status", 10)
+        self.heartbeat_publisher = self.create_publisher(
+            NodeHeartbeat, "/robot/heartbeat", 10
+        )
+        self.material_publisher = self.create_publisher(
+            MaterialState, "/robot/material_state", 10
+        )
+        self.query_service = self.create_service(
+            QueryTask, "/task/query", self.query, callback_group=self.group
+        )
+        self.cancel_service = self.create_service(
+            CancelTask, "/task/cancel", self.cancel_task, callback_group=self.group
+        )
+        self.cancel_clients = [
+            self.create_client(
+                CancelGoal, name + "/_action/cancel_goal", callback_group=self.group
+            )
+            for name in ("/task/execute", "/simulator/task/execute")
+        ]
         self.snapshots = self.create_publisher(
             TaskSnapshot, "/task/snapshot", latched_qos()
         )
@@ -132,6 +165,32 @@ class ExecuteTaskSimulator(Node):
                 raise ValueError("任务来源、ID 或确认上下文无效")
             steps = expand_steps(task.candidate)
             with self.lock:
+                if any(
+                    (
+                        record.task.source_session_id,
+                        record.task.source_input_id,
+                        record.task.source_context_id,
+                    )
+                    == (
+                        task.source_session_id,
+                        task.source_input_id,
+                        task.source_context_id,
+                    )
+                    for record in self.task_records.values()
+                ):
+                    raise ExecutionError(
+                        "SOURCE_ALREADY_DISPATCHED",
+                        "此草稿来源版本已有下发记录，请查询原任务",
+                    )
+                if any(
+                    report.task_id == task.task_id
+                    and report.decision == report.ACCEPTED
+                    for report in self.dispatch_records.values()
+                ):
+                    raise ExecutionError(
+                        "TASK_ALREADY_DISPATCHED",
+                        "此任务已下发；请查询原任务，不重复准备",
+                    )
                 if self.active_dispatch:
                     raise ExecutionError(
                         "ROBOT_BUSY", "执行端正在运行整份任务，请等待完成后再预检"
@@ -144,21 +203,40 @@ class ExecuteTaskSimulator(Node):
                 if self.reserved and self.reserved[0].task_id == task.task_id:
                     raise ValueError("同一任务正在模拟执行")
                 self.world.validate_plan(steps)
+                previous = self.prepared.get(task.task_id)
+                if (
+                    previous
+                    and previous[2] == request.confirmation_context_id
+                    and previous[6] == request.request_id
+                    and previous[0] == task
+                    and now < previous[4]
+                ):
+                    response.success = True
+                    response.task = deepcopy(previous[0])
+                    response.revision = previous[5]
+                    response.confirmation_context_id = previous[2]
+                    set_time(response.confirmation_expires_at, previous[4])
+                    response.message = "原预检仍有效，未执行任何动作"
+                    return response
                 if len(self.prepared) >= 100:
                     self.prepared.pop(next(iter(self.prepared)))
+                self.revision_counter += 1
+                revision = self.revision_counter
                 self.prepared[task.task_id] = (
                     deepcopy(task),
                     steps,
                     request.confirmation_context_id,
                     now,
                     now + 300 * 10**9,
+                    self.revision_counter,
+                    request.request_id,
                 )
             response.success = True
             response.message = (
                 "仅模拟：任务已准备，等待本次用户确认上下文的 ExecuteTask"
             )
             response.task = deepcopy(task)
-            response.revision = 1
+            response.revision = revision
             response.confirmation_context_id = request.confirmation_context_id
             set_time(response.confirmation_expires_at, now + 300 * 10**9)
         except ValueError as exc:
@@ -203,6 +281,9 @@ class ExecuteTaskSimulator(Node):
 
     def accept(self, request):
         with self.lock:
+            if request.dispatch_id in self.dispatch_records:
+                self.get_logger().warning("[SIM] 重复投递ID，保留原记录，不重复执行")
+                return GoalResponse.REJECT
             self.refresh_catalog(force=True)
             prepared = self.prepared.get(request.task_id)
             now = self.get_clock().now().nanoseconds
@@ -216,9 +297,9 @@ class ExecuteTaskSimulator(Node):
                     "[SIM] 拒绝执行：正在执行其他任务，或未 PrepareTask"
                 )
                 return GoalResponse.REJECT
-            task, _, context, created, expires = prepared
+            task, _, context, created, expires, revision, _ = prepared
             if (
-                request.revision != 1
+                request.revision != revision
                 or not request.request_id.strip()
                 or not request.dispatch_id.strip()
                 or request.session_id != task.source_session_id
@@ -237,7 +318,93 @@ class ExecuteTaskSimulator(Node):
             self.reserved = self.prepared.pop(request.task_id)
             self.active_dispatch = request.dispatch_id
             self.active_task_id = request.task_id
+            snapshot = TaskSnapshot()
+            snapshot.task = deepcopy(task)
+            snapshot.revision = revision
+            snapshot.active_dispatch_id = request.dispatch_id
+            snapshot.stamp = self.get_clock().now().to_msg()
+            self.update_snapshot(snapshot, self.world.frame())
+            self.task_records[request.task_id] = snapshot
+            report = DispatchReport()
+            report.stamp = snapshot.stamp
+            for field in (
+                "request_id",
+                "task_id",
+                "dispatch_id",
+                "revision",
+                "session_id",
+                "input_context_id",
+            ):
+                setattr(report, field, getattr(request, field))
+            report.decision, report.success, report.message = (
+                report.ACCEPTED,
+                True,
+                "整单已受理",
+            )
+            self.dispatch_records[request.dispatch_id] = report
             return GoalResponse.ACCEPT
+
+    def query(self, request, response):
+        response.stamp = self.get_clock().now().to_msg()
+        response.request_id = request.request_id
+        with self.lock:
+            report = self.dispatch_records.get(request.dispatch_id)
+            task_id = request.task_id or (report.task_id if report else "")
+            task = self.task_records.get(task_id)
+            if task is not None:
+                response.task, response.task_found = deepcopy(task), True
+                if task_id == self.active_task_id and self.active_dispatch:
+                    self.update_snapshot(response.task, self.world.frame())
+            if report is not None and (
+                not request.task_id or report.task_id == request.task_id
+            ):
+                response.dispatch, response.dispatch_found = deepcopy(report), True
+            response.success = bool(
+                (request.task_id or request.dispatch_id)
+                and (not request.task_id or response.task_found)
+                and (not request.dispatch_id or response.dispatch_found)
+            )
+        response.message = (
+            "原任务查询完成"
+            if response.success
+            else "未找到原任务／投递；不代表可以重新执行"
+        )
+        if not response.success:
+            response.error_code = "TASK_NOT_FOUND"
+        return response
+
+    async def cancel_task(self, request, response):
+        response.stamp = self.get_clock().now().to_msg()
+        response.request_id, response.task_id = request.request_id, request.task_id
+        with self.lock:
+            handle = (
+                self.active_goal if request.task_id == self.active_task_id else None
+            )
+            if handle is None or not self.active_dispatch:
+                response.error_code, response.message = (
+                    "TASK_NOT_ACTIVE",
+                    "原任务未在本执行实例运行，请查询原记录",
+                )
+                return response
+            goal_id = deepcopy(handle.goal_id)
+        # Use the standard Action cancel transition, never force a private state.
+        for client in self.cancel_clients:
+            if not client.service_is_ready():
+                continue
+            cancel = CancelGoal.Request()
+            cancel.goal_info.goal_id = goal_id
+            result = await client.call_async(cancel)
+            if any(
+                list(item.goal_id.uuid) == list(goal_id.uuid)
+                for item in result.goals_canceling
+            ):
+                response.success, response.message = True, "取消已受理，需等待停止终态"
+                return response
+        response.error_code, response.message = (
+            "CANCEL_NOT_ACCEPTED",
+            "未确认取消受理，请查询原任务",
+        )
+        return response
 
     def world_frame(self, stamp):
         frame = self.world.frame()
@@ -262,6 +429,53 @@ class ExecuteTaskSimulator(Node):
             self.world_publisher.publish(
                 String(data=json.dumps(frame, ensure_ascii=False))
             )
+            self.publish_public(frame)
+
+    def publish_public(self, frame):
+        """The workstation consumes only these typed, public interfaces."""
+        stamp = self.get_clock().now().to_msg()
+        material = MaterialState()
+        material.stamp, material.source_node = stamp, self.get_fully_qualified_name()
+        material.boot_id, material.event_seq = self.world_boot, frame["event_seq"]
+        material.frame_id, material.known = "map", not bool(self.catalog_error)
+        material.held_object_id = frame["held_object_id"]
+        for entry in frame["objects"]:
+            item = MaterialLocation()
+            item.object_id, item.station_id, item.carried = (
+                entry["id"],
+                entry["station_id"],
+                entry["carried"],
+            )
+            item.position_known = True
+            item.position.x, item.position.y = float(entry["x"]), float(entry["y"])
+            material.objects.append(item)
+        self.material_publisher.publish(material)
+        if time.monotonic() - self.last_public_status < 0.5:
+            return
+        self.last_public_status = time.monotonic()
+        status = RobotStatus()
+        status.stamp, status.source_node = stamp, self.get_fully_qualified_name()
+        status.active_task_id = self.active_task_id if self.active_dispatch else ""
+        status.active_dispatch_id = self.active_dispatch
+        status.state = (
+            status.FAULT
+            if self.catalog_error or frame["state"] == "FAILED"
+            else status.EXECUTING if self.active_dispatch else status.IDLE
+        )
+        status.error_code = (
+            "SCENE_CONFIGURATION_FAILED" if self.catalog_error else frame["error_code"]
+        )
+        status.message = self.catalog_error or frame["message"]
+        self.status_publisher.publish(status)
+        heartbeat = NodeHeartbeat()
+        heartbeat.stamp, heartbeat.node_name = stamp, self.get_fully_qualified_name()
+        heartbeat.boot_id, heartbeat.sequence = self.world_boot, frame["event_seq"]
+        set_time(heartbeat.uptime, (time.monotonic() - self.started) * 10**9)
+        set_time(heartbeat.expected_period, 500_000_000)
+        heartbeat.state = (
+            heartbeat.DEGRADED if self.catalog_error else heartbeat.RUNNING
+        )
+        self.heartbeat_publisher.publish(heartbeat)
 
     @staticmethod
     def update_snapshot(snapshot, frame):
@@ -282,12 +496,14 @@ class ExecuteTaskSimulator(Node):
             setattr(snapshot, field, frame[field])
 
     def publish(self, handle, snapshot, message, state=None):
+        snapshot.message = message
         with self.lock:
             self.sequence += 1
             snapshot.event_seq = self.sequence
             snapshot.stamp = self.get_clock().now().to_msg()
             frame = self.world_frame(snapshot.stamp)
             self.update_snapshot(snapshot, frame)
+            self.task_records[handle.request.task_id] = deepcopy(snapshot)
             self.world_publisher.publish(
                 String(data=json.dumps(frame, ensure_ascii=False))
             )
@@ -309,7 +525,8 @@ class ExecuteTaskSimulator(Node):
         request = handle.request
         snapshot = TaskSnapshot()
         with self.lock:
-            task, _, _, _, expires = self.reserved
+            self.active_goal = handle
+            task, _, _, _, expires, _, _ = self.reserved
             snapshot.task = deepcopy(task)
             set_time(snapshot.confirmation_expires_at, expires)
         snapshot.revision = request.revision
@@ -393,10 +610,12 @@ class ExecuteTaskSimulator(Node):
         finally:
             with self.lock:
                 self.active_dispatch, self.reserved = "", None
+                self.active_goal = None
 
     def finish(self, result, snapshot):
         with self.lock:
             self.update_snapshot(snapshot, self.world.frame())
+            self.task_records[result.task_id] = deepcopy(snapshot)
         result.stamp = self.get_clock().now().to_msg()
         result.task = deepcopy(snapshot)
         self.get_logger().info(f"[SIM] {result.message}；任务 {result.task_id}")

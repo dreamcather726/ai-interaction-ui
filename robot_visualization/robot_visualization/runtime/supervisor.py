@@ -257,6 +257,12 @@ class BackendSupervisor:
             )
         for name, command in self.plans():
             if name == "robot_simulator":
+                if getattr(self, "executor_present", False):
+                    self.emit(
+                        "任务端点已被外部执行端占用；不启动模拟器、不自动切换来源，请核对部署和 ROS_DOMAIN_ID",
+                        "WARNING",
+                    )
+                    continue
                 simulated = {
                     "map",
                     "camera_raw",

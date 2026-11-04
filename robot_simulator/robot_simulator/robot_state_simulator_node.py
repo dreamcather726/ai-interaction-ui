@@ -5,10 +5,12 @@ import math
 import time
 
 from nav_msgs.msg import Odometry
+from geometry_msgs.msg import TransformStamped
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import String
+from tf2_ros import StaticTransformBroadcaster
 
 from robot_simulator.common import latched_qos, run_node
 
@@ -30,6 +32,14 @@ class RobotStateSimulator(Node):
             BatteryState, "/battery_state", qos_profile_sensor_data
         )
         self.status_pub = self.create_publisher(String, "/robot_status", 10)
+        # The simulation world uses identical map/odom origins. This explicit TF
+        # is simulation infrastructure, never an assumption in the workstation.
+        self.tf_broadcaster = StaticTransformBroadcaster(self)
+        transform = TransformStamped()
+        transform.header.stamp = self.get_clock().now().to_msg()
+        transform.header.frame_id, transform.child_frame_id = "map", "odom"
+        transform.transform.rotation.w = 1.0
+        self.tf_broadcaster.sendTransform(transform)
         self.subscription = self.create_subscription(
             String, "/simulator/world_state", self.on_world, latched_qos()
         )

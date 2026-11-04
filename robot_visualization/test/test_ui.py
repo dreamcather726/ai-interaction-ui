@@ -30,6 +30,19 @@ except ImportError:
 
 @unittest.skipUnless(QT_AVAILABLE, "需要 PySide6")
 class WindowTests(unittest.TestCase):
+    def emit_odom(self, window, value):
+        window.receive_record(
+            "robot_odom",
+            dict(
+                value,
+                frame_id="map",
+                map_frame="map",
+                map_valid=True,
+                map_x=value["x"],
+                map_y=value["y"],
+            ),
+        )
+
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
@@ -230,6 +243,7 @@ class WindowTests(unittest.TestCase):
             ),
         )
         panel.receive(dict(operation="save", success=True, draft=value))
+        self.deliver_preflight(panel.saved)
         self.assertTrue(panel.buttons["confirm"].isEnabled())
         panel.table.item(0, 2).setText("station_b")
         self.assertFalse(panel.buttons["confirm"].isEnabled())
@@ -425,13 +439,13 @@ class WindowTests(unittest.TestCase):
         )
         self.window.receive_record("state", state)
         self.assertIn("处理中", self.window.task_badge.text())
-        self.assertEqual(self.window.stage_progress.value(), 35)
+        self.assertEqual(self.window.stage_progress.value(), 0)
         self.window.receive_record(
             "state", dict(state, stamp_ns=2, event_seq=2, stage=5)
         )
         self.assertIn("待命", self.window.task_badge.text())
-        self.assertEqual(self.window.stage_progress.value(), 100)
-        self.assertIn("非机器人执行", self.window.stage_progress.format())
+        self.assertEqual(self.window.stage_progress.value(), 0)
+        self.assertIn("未确认", self.window.stage_progress.format())
 
     def test_debug_toggle_replays_history_and_errors_never_get_filtered(self):
         window = self.window
@@ -478,23 +492,23 @@ class WindowTests(unittest.TestCase):
         window.show()
         self.app.processEvents()
         window.receive_record(
-            "sim_camera", {"width": 2, "height": 2, "step": 6, "data": bytes(range(12))}
+            "robot_camera",
+            {"width": 2, "height": 2, "step": 6, "data": bytes(range(12))},
         )
         window.receive_record(
-            "sim_map",
+            "robot_map",
             {
                 "width": 4,
                 "height": 4,
                 "resolution": 0.05,
+                "frame_id": "map",
                 "origin_x": -5.0,
                 "origin_y": -5.0,
                 "data": [0] * 16,
             },
         )
-        window.receive_record(
-            "sim_odom", {"x": -2.0, "y": 0.0, "speed": 0.35, "angular": 0.0}
-        )
-        window.receive_record("sim_battery", {"percentage": 0.82, "voltage": 24.2})
+        self.emit_odom(window, {"x": -2.0, "y": 0.0, "speed": 0.35, "angular": 0.0})
+        window.receive_record("robot_battery", {"percentage": 0.82, "voltage": 24.2})
         self.assertFalse(window.camera_view.image.isNull())
         self.assertFalse(window.map_view.image.isNull())
         self.assertIn("82%", window.hardware_labels["电池电量"].text())
@@ -516,7 +530,7 @@ class WindowTests(unittest.TestCase):
         self.app.processEvents()
         network_before = window.hardware_labels["网络连接"].text()
         window.receive_record(
-            "sim_status",
+            "robot_status",
             {
                 "camera_ready": True,
                 "chassis_ready": True,
@@ -533,7 +547,7 @@ class WindowTests(unittest.TestCase):
         self.assertNotIn("SIM 网络", network_before)
         self.assertEqual(window.robot_page_battery.value(), 82)
         window.receive_record(
-            "sim_status",
+            "robot_status",
             {
                 "world_fresh": True,
                 "chassis_ready": True,
@@ -553,10 +567,32 @@ class WindowTests(unittest.TestCase):
                 ],
             },
         )
+        self.assertIn("未确认", window.material_state_label.text())
+        window.receive_record("robot_heartbeat", dict(boot_id="typed-boot"))
+        window.receive_record(
+            "robot_material",
+            dict(
+                boot_id="typed-boot",
+                event_seq=1,
+                frame_id="map",
+                known=True,
+                held_object_id="box_1",
+                objects=[
+                    dict(
+                        id="box_1",
+                        station_id="",
+                        carried=True,
+                        position_known=True,
+                        x=-2.0,
+                        y=0.0,
+                    )
+                ],
+            ),
+        )
         self.assertEqual(window.material_state_label.text(), "持有物料：box_1")
         self.assertIn("随机器人携带", window.material_state_label.toolTip())
         window.receive_record(
-            "sim_status",
+            "robot_status",
             {
                 "world_fresh": True,
                 "chassis_ready": True,
@@ -575,9 +611,29 @@ class WindowTests(unittest.TestCase):
                 ],
             },
         )
+        window.receive_record(
+            "robot_material",
+            dict(
+                boot_id="typed-boot",
+                event_seq=2,
+                frame_id="map",
+                known=True,
+                held_object_id="",
+                objects=[
+                    dict(
+                        id="box_1",
+                        station_id="station_b",
+                        carried=False,
+                        position_known=True,
+                        x=2.0,
+                        y=0.0,
+                    )
+                ],
+            ),
+        )
         self.assertEqual(window.material_state_label.text(), "持有物料：无")
         self.assertIn("station_b", window.material_state_label.toolTip())
-        window.receive_record("sim_battery", {"percentage": 0.63, "voltage": 24.0})
+        window.receive_record("robot_battery", {"percentage": 0.63, "voltage": 24.0})
         self.assertEqual(
             window.hardware_labels["电池电量"].text(),
             window.hardware_page_labels["电池电量"].text(),
@@ -589,7 +645,7 @@ class WindowTests(unittest.TestCase):
         self.assertTrue(window.map_view.isVisible())
         self.assertTrue(window.camera_view.isVisible())
         window.receive_record(
-            "sim_task",
+            "robot_task",
             {
                 "task_id": "sim-one",
                 "progress": 0.25,
@@ -603,9 +659,9 @@ class WindowTests(unittest.TestCase):
         sent = []
         window.draft_requested.connect(lambda operation, _: sent.append(operation))
         QTest.mouseClick(window.cancel_simulation_button, Qt.MouseButton.LeftButton)
-        self.assertEqual(sent, ["simulation_cancel"])
+        self.assertEqual(sent, ["cancel_execution"])
         window.receive_record(
-            "sim_task",
+            "robot_task",
             {
                 "task_id": "sim-one",
                 "progress": 0.25,
@@ -622,19 +678,29 @@ class WindowTests(unittest.TestCase):
     ):
         self._prepare_home_candidate()
         window, view = self.window, self.window.simulation_view
+        window.receive_record("robot_heartbeat", dict(boot_id="freshness-boot"))
         samples = {
-            "sim_camera": dict(width=2, height=2, step=6, data=bytes(range(12))),
-            "sim_odom": dict(x=-2.0, y=0.0, speed=0.4, angular=0.0),
-            "sim_battery": dict(percentage=0.82, voltage=24.2),
-            "sim_status": dict(
+            "robot_camera": dict(width=2, height=2, step=6, data=bytes(range(12))),
+            "robot_odom": dict(x=-2.0, y=0.0, speed=0.4, angular=0.0),
+            "robot_battery": dict(percentage=0.82, voltage=24.2),
+            "robot_status": dict(
                 world_fresh=True, chassis_ready=True, held_object_id="box_1"
+            ),
+            "robot_material": dict(
+                boot_id="freshness-boot",
+                known=True,
+                frame_id="map",
+                held_object_id="box_1",
+                objects=[],
             ),
         }
         with patch(
             "robot_visualization.ui.simulation.time.monotonic", return_value=10.0
         ):
             for kind, sample in samples.items():
-                window.receive_record(kind, dict(sample, received_at=10.0, stamp_ns=1))
+                window.receive_record(
+                    kind, dict(sample, received_at=10.0, stamp_ns=1, event_seq=1)
+                )
             view.check_freshness()
             self.assertFalse(window.camera_view.stale)
             self.assertTrue(window.robot_page_battery.isEnabled())
@@ -644,7 +710,9 @@ class WindowTests(unittest.TestCase):
         ):
             # Replayed source stamps must not keep old sensor data alive.
             for kind, sample in samples.items():
-                window.receive_record(kind, dict(sample, received_at=12.1, stamp_ns=1))
+                window.receive_record(
+                    kind, dict(sample, received_at=12.1, stamp_ns=1, event_seq=1)
+                )
             view.check_freshness()
             self.assertTrue(window.camera_view.stale)
             self.assertTrue(window.camera_page_view.stale)
@@ -658,7 +726,9 @@ class WindowTests(unittest.TestCase):
             "robot_visualization.ui.simulation.time.monotonic", return_value=12.2
         ):
             for kind, sample in samples.items():
-                window.receive_record(kind, dict(sample, received_at=12.2, stamp_ns=2))
+                window.receive_record(
+                    kind, dict(sample, received_at=12.2, stamp_ns=2, event_seq=2)
+                )
             view.check_freshness()
             self.assertFalse(window.camera_view.stale)
             self.assertTrue(window.robot_page_battery.isEnabled())
@@ -669,7 +739,7 @@ class WindowTests(unittest.TestCase):
         parsed = self._prepare_home_candidate()
         window = self.window
         window.receive_record(
-            "sim_task",
+            "robot_task",
             dict(
                 task_id="original-task",
                 draft_id="original-draft",
@@ -682,7 +752,7 @@ class WindowTests(unittest.TestCase):
             ),
         )
         window.receive_record(
-            "sim_task",
+            "robot_task",
             dict(
                 task_id="original-task",
                 active=False,
@@ -703,7 +773,7 @@ class WindowTests(unittest.TestCase):
         self.assertFalse(window.retry_simulation_button.isVisible())
         self.assertTrue(window.cancel_simulation_button.isEnabled())
         window.receive_record(
-            "sim_task",
+            "robot_task",
             dict(
                 task_id="original-task",
                 canceling=True,
@@ -712,7 +782,7 @@ class WindowTests(unittest.TestCase):
         )
         self.assertFalse(window.cancel_simulation_button.isEnabled())
         window.receive_record(
-            "sim_task",
+            "robot_task",
             dict(
                 task_id="original-task",
                 active=False,
@@ -757,26 +827,26 @@ class WindowTests(unittest.TestCase):
             execution_unknown=False,
             message="准备被拒绝，尚未发送执行 Goal",
         )
-        window.receive_record("sim_task", task)
+        window.receive_record("robot_task", task)
         self.assertTrue(window.retry_simulation_button.isEnabled())
         sent = []
         window.draft_requested.connect(
             lambda operation, body: sent.append((operation, body))
         )
         QTest.mouseClick(window.retry_simulation_button, Qt.MouseButton.LeftButton)
-        self.assertEqual(sent[0][0], "simulation_prepare")
+        self.assertEqual(sent[0][0], "prepare_execution")
         self.assertEqual(sent[0][1]["draft_id"], "retry-draft")
         self.assertEqual(sent[0][1]["revision"], 1)
         window.receive_record(
-            "sim_task", dict(task, execution_unknown=True, retryable=False)
+            "robot_task", dict(task, execution_unknown=True, retryable=False)
         )
         self.assertFalse(window.retry_simulation_button.isVisible())
-        window.receive_record("sim_task", task)
+        window.receive_record("robot_task", task)
         panel.changed()
         window.home_drafts.refresh()
         self.assertFalse(window.retry_simulation_button.isEnabled())
 
-    def _prepare_home_candidate(self):
+    def _prepare_home_candidate(self, use_simulator=True):
         self.window.can_close = True
         self.window.close()
         self.window = DashboardWindow(
@@ -785,7 +855,7 @@ class WindowTests(unittest.TestCase):
                 stations=["station_a", "station_b"],
                 objects=["box_1"],
                 audio_root=Path("/tmp/audio"),
-                use_simulator=True,
+                use_simulator=use_simulator,
             )
         )
         self.window.show()
@@ -826,7 +896,13 @@ class WindowTests(unittest.TestCase):
         self.assertNotIn("192.0.2.10", self.window.hardware_labels["网络连接"].text())
 
     def test_home_candidate_save_confirm_execute_never_requires_page_switch(self):
-        parsed = self._prepare_home_candidate()
+        self._assert_home_workflow(use_simulator=True)
+
+    def test_real_deployment_uses_the_same_home_telemetry_and_confirmation_flow(self):
+        self._assert_home_workflow(use_simulator=False)
+
+    def _assert_home_workflow(self, use_simulator):
+        parsed = self._prepare_home_candidate(use_simulator)
         window = self.window
         sent = []
         window.draft_requested.connect(
@@ -859,7 +935,7 @@ class WindowTests(unittest.TestCase):
         self.assertIn("导航", window.home_draft_preview.toPlainText())
         self.assertFalse(window.home_confirm_draft_button.isEnabled())
         self.assertEqual(
-            [operation for operation, _ in sent], ["save", "simulation_prepare"]
+            [operation for operation, _ in sent], ["save", "prepare_execution"]
         )
         self.deliver_preflight(saved)
         self.assertTrue(window.home_confirm_draft_button.isEnabled())
@@ -876,7 +952,7 @@ class WindowTests(unittest.TestCase):
         )
         self.assertEqual(
             [operation for operation, _ in sent],
-            ["save", "simulation_prepare", "confirm", "simulate"],
+            ["save", "prepare_execution", "confirm", "execute"],
         )
         task = dict(
             task_id="home-task",
@@ -887,34 +963,31 @@ class WindowTests(unittest.TestCase):
             state=1,
             prepared=False,
         )
-        window.receive_record("sim_task", dict(task, progress=0.0, step=""))
+        window.receive_record("robot_task", dict(task, progress=0.0, step=""))
         self.assertEqual(window.stage_progress.value(), 0)
         window.receive_record(
-            "sim_task", dict(task, progress=0.25, step="2/4 抓取 box_1")
+            "robot_task", dict(task, progress=0.25, step="2/4 抓取 box_1")
         )
         self.assertEqual(window.home_draft_status.text(), "执行中，步骤 2/4")
         self.assertEqual(window.stage_progress.value(), 25)
         window.receive_record(
-            "sim_map",
+            "robot_map",
             {
                 "width": 200,
                 "height": 200,
                 "resolution": 0.05,
+                "frame_id": "map",
                 "origin_x": -5.0,
                 "origin_y": -5.0,
                 "data": [0] * 40000,
             },
         )
-        window.receive_record(
-            "sim_odom", {"x": -2.0, "y": 0.0, "speed": 0.35, "angular": 0.0}
-        )
+        self.emit_odom(window, {"x": -2.0, "y": 0.0, "speed": 0.35, "angular": 0.0})
         old_color = window.map_view.image.pixelColor(180, 300)
-        window.receive_record(
-            "sim_odom", {"x": 2.0, "y": 0.0, "speed": 0.35, "angular": 0.0}
-        )
+        self.emit_odom(window, {"x": 2.0, "y": 0.0, "speed": 0.35, "angular": 0.0})
         self.assertNotEqual(window.map_view.image.pixelColor(180, 300), old_color)
         window.receive_record(
-            "sim_task",
+            "robot_task",
             dict(task, active=False, progress=1.0, state=3, step="4/4 放下 box_1"),
         )
         self.assertEqual(window.home_draft_status.text(), "执行完成")
@@ -943,7 +1016,7 @@ class WindowTests(unittest.TestCase):
             )
         )
         window.receive_record(
-            "sim_task",
+            "robot_task",
             {
                 "task_id": "",
                 "draft_id": "home-draft-next",
@@ -959,7 +1032,7 @@ class WindowTests(unittest.TestCase):
 
     def deliver_preflight(self, saved):
         self.window.receive_record(
-            "sim_task",
+            "robot_task",
             dict(
                 task_id="prepared-" + saved["draft_id"],
                 draft_id=saved["draft_id"],
@@ -1009,7 +1082,7 @@ class WindowTests(unittest.TestCase):
                 draft=dict(saved, state=1, event_seq=2),
             )
         )
-        self.assertNotIn("simulate", sent)
+        self.assertNotIn("execute", sent)
         # Expired preflight disables both home and editor confirmation controls.
         window.simulation_view.task["prepared_until"] = 0
         window.home_drafts.refresh()

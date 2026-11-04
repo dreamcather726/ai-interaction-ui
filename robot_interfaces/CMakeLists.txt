@@ -34,6 +34,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/TaskEvent.msg"
   "msg/ComponentStatus.msg"
   "msg/RobotStatus.msg"
+  "msg/MaterialLocation.msg"
+  "msg/MaterialState.msg"
   "msg/SafetyState.msg"
   "msg/ErrorReport.msg"
   "msg/NodeHeartbeat.msg"
@@ -54,9 +56,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/ExecuteTask.action"
   "action/Speak.action"
   "action/PlayAudio.action"
-  DEPENDENCIES builtin_interfaces action_msgs
+  DEPENDENCIES builtin_interfaces action_msgs geometry_msgs
 )
 
-ament_export_dependencies(rosidl_default_runtime builtin_interfaces action_msgs)
+ament_export_dependencies(rosidl_default_runtime builtin_interfaces action_msgs geometry_msgs)
 
 ament_package()

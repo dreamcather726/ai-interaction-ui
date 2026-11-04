@@ -1,6 +1,8 @@
 # robot_simulator
 
 ROS 2 Humble 的可选硬件消息模拟包，不访问底盘、摄像头、音频设备或 SLAM 硬件。
+模拟器与香橙派共用上位机客户端和公开接口；完整接口、部署参数及人工验收见
+[统一设备接口与部署](../docs/统一设备接口与部署.md)。本次仅静态检查，未运行节点、构建或测试。
 本仓库本身是工作空间的源码目录，包与 ai_edge、ai_interface 等四个包同级。
 若你把仓库放在工作空间的 src/ 下，则本包自然位于 src/robot_simulator/。
 
@@ -13,14 +15,15 @@ cd ~/ai-interaction-ui
 source /opt/ros/humble/setup.bash
 colcon build --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
 source install/setup.bash
-ros2 run --prefix /usr/bin/python3 robot_visualization dashboard --ros-args -p use_simulator:=true
+ros2 launch robot_visualization dashboard_sim.launch.py
 ```
 
 此命令自动启动模拟地图、相机、底盘、电池和两个 Action 服务端，保留现有
 ASR、语义解析、草稿服务，并默认启动真实 microphone_sender_node 供你直接录音。
 地图、相机、底盘和任务执行仍使用模拟器。ASR/FunASR、本地模型和
 Ollama 仍需要原来的依赖；模拟器不伪造 ASR 或 LLM 结果。
-不传 use_simulator（默认 false）时保留原来的真实硬件启动行为。
+真实设备改用 dashboard_real.launch.py；相同客户端和界面连接真实端，不启动模拟器。
+两份 launch 默认分别使用 ROS_DOMAIN_ID=71/72。旧 use_simulator 参数仍支持，但旧 ros2 run 命令不自动隔离域。
 
 先在“系统设置”的工位／物料管理中添加并启用资料，ID 可以是 `1`、`2`、`x`，
 名称和语音别名可以是“1号点”“二号点”等。工作台自动把同一个 catalog_path 传给
@@ -45,8 +48,8 @@ PICK / PLACE 默认耗时 2 秒，完成后才改变持物及物料位置。位�
 仍持有的物料不能被移除，仍被物料占用的工位不能无处置地删除。重启执行节点会重置场景，
 并丢失内存中的 PrepareTask 记录。再次演示仍须保存并确认新草稿版本。
 
-仅在 use_simulator=true 时启用画面订阅和模拟执行客户端。界面始终调用
-/simulator/task/prepare 与 /simulator/task/execute，避免向真实 /task/execute 发任务。
+两种模式均启用同一个任务和遥测客户端，默认使用公开 /task/prepare、/task/execute、/task/query。
+由隔离的 ROS 域和部署配置选择设备，不再依赖模拟器私有端点或 simulator=true JSON。
 默认录音控制使用真实 /audio/start_recording 和 /audio/stop_recording，沿用 device、
 max_recording_seconds 参数。等待麦克风及 ASR 就绪后点击“开始录音”，说完点击
 “停止并识别”，即可走真实语音输入 → 候选 → 草稿 → 模拟执行。
@@ -67,7 +70,7 @@ max_recording_seconds 参数。等待麦克风及 ASR 就绪后点击“开始�
 禁止新执行，不把失联解释为已停止。同一任务的新反馈恢复后继续跟踪；迟到的
 最终 Result 仍可确认完成或取消。重复事件序号不会刷新等待期限。
 
-点击“取消模拟执行”后，客户端检查取消答复并等待原 Action 的最终停止结果。
+点击“取消执行”后，客户端检查取消答复并等待原 Action 的最终停止结果。
 取消受理不等于已停；5 秒内仍无停止终态，或取消被拒绝／发送失败时，显示停止
 未确认。等待停止期间不重复发送取消，也不会将进度补到 100%。
 
@@ -80,7 +83,7 @@ request_id、task_id 和确认上下文；程序不自动重试。一旦执行 G
 电池和持物状态分别标明过期／未确认，不用零速度或空手冒充真实状态。源时间戳
 不变的旧消息不刷新期限；收到新的有效消息后恢复。地图作为静态背景保留。
 
-手动检查这四项时可先独立启动 simulator_all，再启动工作台使其沿用外部节点：
+手动检查下列项目时可先在 ROS_DOMAIN_ID=71 独立启动 simulator_all，再启动工作台使其沿用外部节点：
 
 1. 添加工位 `1`、`2` 和物料 `x`，加入四步搬运草稿。首页应显示完整草稿；保存和预检
    后机器人仍待命，只有点击“确认并整单执行”后才开始。编辑草稿后旧确认入口失效。
@@ -91,7 +94,9 @@ request_id、task_id 和确认上下文；程序不自动重试。一旦执行 G
    条件后人工重试。需要改变任务内容时仍应编辑、保存新版本并重新确认。
 
 这些检查需由你在 Humble 环境运行。本轮只进行了静态检查，没有运行程序或测试。
-跨进程持久化、执行查询与重启后的自动恢复不在本轮实现范围；原服务无法恢复时，
+上位机会保存原投递及已确认终态，重连/重启后只读查询原任务，不重发 Goal。
+模拟执行端的查询记录仍在内存中；该执行进程重启后记录丢失，返回未找到。
+执行端持久化与断点自动执行恢复未实现；原服务无法恢复时，
 需先人工核实其执行／停止状态，再重启模拟工作台及相关模拟节点，不直接重发旧任务。
 
 ## 可选：没有麦克风时回放 WAV
@@ -150,11 +155,15 @@ ROS 图中的地图、相机、底盘节点分别命名为 /map、/camera/camera
 | /camera/image_raw | sensor_msgs/Image；rgb8，默认640×480、10fps，时间文字与移动圆点；SensorData QoS |
 | /odom | nav_msgs/Odometry；odom → base_link，转发统一调度的实际模拟位置/速度；SensorData QoS |
 | /battery、/battery_state | sensor_msgs/BatteryState；100%缓慢降至20%，电压/电流有波动；SensorData QoS |
-| /robot_status | std_msgs/String；JSON，底盘/相机、持有物料、各物料位置和调度新鲜度；不模拟网络 |
+| /robot_status | std_msgs/String；旧内部兼容JSON，上位机不再消费；不模拟网络 |
+| /robot/status、/robot/heartbeat | robot_interfaces/RobotStatus、NodeHeartbeat；独立业务状态与活性，2Hz |
+| /robot/material_state | robot_interfaces/MaterialState；类型化持物及物料位置，10Hz |
+| /tf_static | 显式的模拟 map→odom 单位变换；真实设备须提供真实TF |
 | /simulator/world_state | std_msgs/String；执行节点唯一发布的世界状态，包含位置、物料、任务步骤和进度；可靠/TransientLocal/1 |
 | /task/prepare、/simulator/task/prepare | robot_interfaces/PrepareTask；先传入完整TaskSpec，纯内存保存 |
 | /task/execute、/simulator/task/execute | robot_interfaces/ExecuteTask；串行动作反馈、完成与取消 |
 | /task/snapshot、/simulator/task/snapshot | robot_interfaces/TaskSnapshot；模拟步骤和进度 |
+| /task/query、/task/cancel | robot_interfaces/QueryTask、CancelTask；原ID查询与恢复任务的显式取消 |
 | /audio/play | robot_interfaces/PlayAudio；有效PCM等待1秒；取消返回已模拟帧数，不做TTS |
 | /audio/segments | 可选 WAV 回放；robot_interfaces/AudioSegment |
 | /audio/start_recording、/audio/stop_recording | 可选 WAV 回放的 Trigger 控制；另提供 /simulator/audio/ 下同名别名供模拟界面使用 |
@@ -214,7 +223,7 @@ rqt_graph
 工作台验收：地图出现 A/B 和移动位置点；相机时间变化且圆点移动；右侧电量/位置变化；
 网络卡片显示本机实际活动接口和 IP（WSL 下为 Ubuntu 虚拟网卡），端到端延迟未测量；
 保存并确认长草稿后按真实动作数推进；中途取消后显示取消终态且进度不变成100%；
-关闭窗口检查由窗口启动的模拟进程退出，外部启动的保留；不传use_simulator时仍是原流程。
+关闭窗口检查由窗口启动的模拟进程退出，外部启动的保留；真实模式使用相同流程与界面。
 
 如需自行运行测试：`colcon test --packages-select robot_simulator`，随后执行
 `colcon test-result --verbose`。纯数据测试覆盖地图形状、RGB尺寸/变化、搬运动作展开、

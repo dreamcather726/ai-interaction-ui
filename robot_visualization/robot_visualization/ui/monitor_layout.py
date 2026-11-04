@@ -95,13 +95,11 @@ def build_device_page(window, kind):
     """Independent views of the same telemetry; never move homepage widgets."""
     titles = {"map": "地图与定位", "robot": "机器人状态", "camera": "相机图像"}
     title = titles[kind]
-    if not getattr(window.config, "use_simulator", False):
-        return placeholder(title, "地图模块待接入" if kind == "map" else None)
     if kind == "robot":
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(label("机器人状态 · SIM 模拟数据", "section"))
+        layout.addWidget(label("机器人状态 · 数据", "section"))
         grid = QGridLayout()
         grid.setSpacing(8)
         window.hardware_page_labels = {}
@@ -110,7 +108,7 @@ def build_device_page(window, kind):
         ):
             card = compact_card(name)
             field = label(
-                "等待模拟消息" if name != "当前任务" else "尚无模拟执行任务",
+                "等待消息" if name != "当前任务" else "尚无执行任务",
                 "muted",
                 True,
             )
@@ -132,14 +130,14 @@ def build_device_page(window, kind):
         layout.addLayout(grid, 1)
         return page
 
-    from robot_visualization.ui.simulation import SimulationImage
+    from robot_visualization.ui.simulation import RobotImage
 
-    card = compact_card(title, "SIM 模拟数据 · 与首页共享消息，切页保留最新画面")
-    view = SimulationImage(
+    card = compact_card(title, "数据 · 与首页共享消息，切页保留最新画面")
+    view = RobotImage(
         "等待 /map 地图消息" if kind == "map" else "等待 /camera/image_raw 图像消息"
     )
     view.setObjectName("mapPlaceholder" if kind == "map" else "videoPlaceholder")
-    info = ElidedLabel("等待模拟地图与定位" if kind == "map" else "等待模拟相机画面")
+    info = ElidedLabel("等待地图与定位" if kind == "map" else "等待相机画面")
     if kind == "map":
         window.map_page_view, window.map_page_info = view, info
     else:
@@ -257,12 +255,9 @@ def build_home(window):
 def build_map(window):
     card = compact_card("SLAM 地图 / 机器人定位")
     icon_heading(window, card, QStyle.StandardPixmap.SP_DirIcon)
-    if getattr(window.config, "use_simulator", False):
-        from robot_visualization.ui.simulation import SimulationImage
+    from robot_visualization.ui.simulation import RobotImage
 
-        view = SimulationImage("等待 SIM 地图")
-    else:
-        view = MapPlaceholder("地图模块待接入")
+    view = RobotImage("Waiting for map")
     window.map_view = view
     view.setObjectName("mapPlaceholder")
     view.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -274,7 +269,7 @@ def build_map(window):
         button = QPushButton(title)
         button.setObjectName("small")
         button.setEnabled(False)
-        button.setToolTip(f"{tooltip}：地图模块待接入")
+        button.setToolTip(f"{tooltip}控件待实现；地图数据正常订阅")
         controls.addWidget(button)
     controls.addStretch()
     card.body.addLayout(controls)
@@ -288,12 +283,9 @@ def build_camera(window):
     collapse.setObjectName("small")
     collapse.setEnabled(False)
     card.heading.addWidget(collapse)
-    if getattr(window.config, "use_simulator", False):
-        from robot_visualization.ui.simulation import SimulationImage
+    from robot_visualization.ui.simulation import RobotImage
 
-        video = SimulationImage("等待 SIM 相机")
-    else:
-        video = label("相机模块待接入")
+    video = RobotImage("Waiting for camera")
     window.camera_view = video
     video.setObjectName("videoPlaceholder")
     video.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -361,8 +353,6 @@ def build_commands(window):
     source_body.addWidget(window.home_add_candidate_button)
     window.home_draft_hint = ElidedLabel(
         "加入后查看完整草稿；预检通过后由你确认整单执行"
-        if getattr(window.config, "use_simulator", False)
-        else "确认草稿只记录审阅结果；真实执行尚未接入"
     )
     window.home_draft_hint.setObjectName("muted")
     source_body.addWidget(window.home_draft_hint)
@@ -391,24 +381,19 @@ def build_commands(window):
 
 def build_progress(window):
     card = compact_card("任务流程 / 执行进度")
-    if getattr(window.config, "use_simulator", False):
-        window.cancel_simulation_button = QPushButton("取消模拟执行")
-        window.cancel_simulation_button.setEnabled(False)
-        card.heading.addWidget(window.cancel_simulation_button)
-        window.simulation_step_label = label(
-            "SIM 等待已确认草稿；动作数量随草稿变化", "muted", True
-        )
-        card.body.addWidget(window.simulation_step_label)
-    else:
-        # 六步仅表示将来接入的机器人流程，不能把 ASR stage 冒充底盘／机械臂状态。
-        card.body.addWidget(label("机器人动作流程（待接入）", "muted"))
-        card.body.addWidget(
-            label(
-                "待命 → 导航至 A 点 → 识别目标 → 机械臂抓取 → 导航至 B 点 → 放置完成",
-                "muted",
-                True,
-            )
-        )
+    window.cancel_simulation_button = QPushButton("取消执行")
+    window.cancel_simulation_button.setEnabled(False)
+    card.heading.addWidget(window.cancel_simulation_button)
+    window.query_execution_button = QPushButton("查询原任务")
+    window.query_execution_button.setObjectName("small")
+    window.query_execution_button.clicked.connect(
+        lambda: window.draft_requested.emit("query_execution", {})
+    )
+    card.heading.addWidget(window.query_execution_button)
+    window.simulation_step_label = label(
+        "等待已确认草稿；动作数量随草稿变化", "muted", True
+    )
+    card.body.addWidget(window.simulation_step_label)
     card.body.addWidget(label("当前语音处理流程", "section"))
     window.pipeline = PipelineStrip()
     card.body.addWidget(window.pipeline)
@@ -430,14 +415,13 @@ def build_progress(window):
         "任务 ID：待接入\n开始时间：待接入\n预计完成：待接入", "muted", True
     )
     info.body.addWidget(window.task_information)
-    if getattr(window.config, "use_simulator", False):
-        window.material_state_label = ElidedLabel("持有物料：等待反馈")
-        info.body.addWidget(window.material_state_label)
-        window.simulation_scene_hint = ElidedLabel(
-            "工位／物料将同步管理资料；坐标仅用于仿真"
-        )
-        window.simulation_scene_hint.setObjectName("muted")
-        info.body.addWidget(window.simulation_scene_hint)
+    window.material_state_label = ElidedLabel("持有物料：等待反馈")
+    info.body.addWidget(window.material_state_label)
+    window.simulation_scene_hint = ElidedLabel(
+        "工位坐标与物料位置由执行端提供；等待状态"
+    )
+    window.simulation_scene_hint.setObjectName("muted")
+    info.body.addWidget(window.simulation_scene_hint)
     info.body.addStretch()
     details.addWidget(current, 3)
     details.addWidget(info, 2)
@@ -445,7 +429,7 @@ def build_progress(window):
     window.stage_progress = QProgressBar()
     window.stage_progress.setRange(0, 100)
     window.stage_progress.setValue(0)
-    window.stage_progress.setFormat("语音阶段示意 %p% · 非机器人执行进度")
+    window.stage_progress.setFormat("任务执行进度未确认")
     card.body.addWidget(window.stage_progress)
     draft_actions = QHBoxLayout()
     window.home_draft_status = ElidedLabel("草稿未保存")
@@ -454,19 +438,14 @@ def build_progress(window):
     window.home_save_draft_button.setObjectName("small")
     window.home_save_draft_button.setEnabled(False)
     draft_actions.addWidget(window.home_save_draft_button)
-    window.home_confirm_draft_button = QPushButton(
-        "确认并整单执行"
-        if getattr(window.config, "use_simulator", False)
-        else "确认草稿"
-    )
+    window.home_confirm_draft_button = QPushButton("确认并整单执行")
     window.home_confirm_draft_button.setObjectName("primary")
     window.home_confirm_draft_button.setEnabled(False)
     draft_actions.addWidget(window.home_confirm_draft_button)
-    if getattr(window.config, "use_simulator", False):
-        window.retry_simulation_button = QPushButton("重试准备")
-        window.retry_simulation_button.setObjectName("small")
-        window.retry_simulation_button.setVisible(False)
-        draft_actions.addWidget(window.retry_simulation_button)
+    window.retry_simulation_button = QPushButton("重试准备")
+    window.retry_simulation_button.setObjectName("small")
+    window.retry_simulation_button.setVisible(False)
+    draft_actions.addWidget(window.retry_simulation_button)
     card.body.addLayout(draft_actions)
     return card
 
@@ -498,7 +477,7 @@ def build_logs(window):
     source = PagedText(
         "数据来源说明\n服务徽章与语音处理阶段来自现有ROS接口。\n"
         "网络信息来自运行工作台的电脑；WSL 下显示 Ubuntu 虚拟网卡。\n"
-        "模拟模式的地图、相机、底盘和电池由模拟器提供。\n"
+        "地图、相机、底盘和电池来自当前部署的统一设备接口。\n"
         "语音阶段与任务执行进度分别展示；执行进度以反馈为准。"
     )
     row.addWidget(source, 3)

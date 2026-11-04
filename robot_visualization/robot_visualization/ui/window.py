@@ -61,11 +61,10 @@ class DashboardWindow(QMainWindow):
         self.resize(min(1440, width), min(900, height))
         self.setStyleSheet(STYLE)
         self.build_ui()
-        self.simulation_view = None
-        if getattr(config, "use_simulator", False):
-            from robot_visualization.ui.simulation import SimulationView
+        from robot_visualization.ui.simulation import RobotView
 
-            self.simulation_view = SimulationView(self)
+        self.robot_view = RobotView(self)
+        self.simulation_view = self.robot_view  # Compatibility alias.
         self.home_drafts = HomeDraftWorkflow(self)
         self.network_status = LocalNetworkStatus(self)
         self.refresh_controls()
@@ -115,8 +114,8 @@ class DashboardWindow(QMainWindow):
         self.time_label.setToolTip("北京时间 · Asia/Shanghai")
 
     def refresh_task_badge(self):
-        if self.simulation_view is not None and self.simulation_view.task:
-            self.simulation_view.render_task()
+        if self.robot_view is not None and self.robot_view.task:
+            self.robot_view.render_task()
             return
         active = any(
             record.get("state", {}).get("stage") in (0, 1, 2, 3, 4)
@@ -231,8 +230,8 @@ class DashboardWindow(QMainWindow):
         self.tick()
 
     def tick(self):
-        if self.simulation_view is not None:
-            self.simulation_view.check_freshness()
+        if self.robot_view is not None:
+            self.robot_view.check_freshness()
         recording = self.availability.get("recording")
         if recording is True:
             elapsed = max(0, time.monotonic() - self.recording_since)
@@ -257,9 +256,9 @@ class DashboardWindow(QMainWindow):
 
     @Slot(str, dict)
     def receive_record(self, kind, value):
-        if self.simulation_view is not None and kind.startswith("sim_"):
-            self.simulation_view.receive(kind, value)
-            if kind == "sim_task":
+        if kind.startswith(("robot_", "sim_")):
+            self.robot_view.receive(kind, value)
+            if kind in ("robot_task", "sim_task"):
                 self.home_drafts.refresh()
             return
         request_id = value.get("request_id")
@@ -310,17 +309,14 @@ class DashboardWindow(QMainWindow):
             stage in (5, 6, 10),
             state.get("error_code", ""),
         )
-        # 只是已有语音处理阶段的示意值，不代表底盘／机械臂执行进度。
-        progress = {0: 0, 1: 15, 2: 35, 3: 55, 4: 75, 5: 100, 6: 100, 10: 100}
-        if self.simulation_view is None:
-            self.stage_progress.setValue(progress.get(stage, 0))
+        # Voice stages update PipelineStrip only. Robot progress is authoritative.
         self.request_label.setText(f"请求：{self.selected_request or '—'}")
         self.asr_text.setPlainText(asr.get("text", ""))
         self._show_candidate(parsed)
         self.draft_panel.set_candidate(parsed)
         self._show_result_details(state, parsed)
-        if self.simulation_view is not None and self.simulation_view.task:
-            self.simulation_view.render_task()
+        if self.robot_view is not None and self.robot_view.task:
+            self.robot_view.render_task()
         self.home_drafts.refresh()
 
     def _show_candidate(self, parsed):

@@ -516,7 +516,7 @@ class TaskDraftPanel(QWidget):
         self.summary.setPlainText(
             plan_summary(empty_candidate("SEQUENCE", expanded))
             + (
-                "\n预检通过后确认，将整单提交模拟执行端；无需逐步确认。"
+                "\n预检通过后确认，将整单提交执行端；无需逐步确认。"
                 if self.confirmation_gate is not None
                 else "\n确认只保存逐步动作的审阅结果，机器人尚未执行。"
             )

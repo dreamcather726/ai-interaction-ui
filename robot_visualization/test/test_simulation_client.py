@@ -1,7 +1,10 @@
 """Client protocol regressions using controlled futures/time; no nodes or hardware."""
 
 from concurrent.futures import Future
-import json
+from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -9,7 +12,9 @@ from unittest.mock import Mock, patch
 try:
     from builtin_interfaces.msg import Time
     from robot_interfaces.action import ExecuteTask
-    from robot_interfaces.srv import PrepareTask
+    from robot_interfaces.msg import NodeHeartbeat, RobotStatus
+    from robot_interfaces.srv import PrepareTask, QueryTask
+    from robot_visualization.connection import RobotConnection
     from robot_visualization.ros.simulation import SimulationClient
 
     ROS_AVAILABLE = True
@@ -22,26 +27,48 @@ class SimulationClientTests(unittest.TestCase):
     def setUp(self):
         self.now = 100.0
         clock = patch(
-            "robot_visualization.ros.simulation.time.monotonic",
+            "robot_visualization.ros.robot.time.monotonic",
             side_effect=lambda: self.now,
         )
         clock.start()
         self.addCleanup(clock.stop)
         self.action = Mock()
         action_type = patch(
-            "robot_visualization.ros.simulation.ActionClient", return_value=self.action
+            "robot_visualization.ros.robot.ActionClient", return_value=self.action
         )
-        action_type.start()
+        self.action_factory = action_type.start()
         self.addCleanup(action_type.stop)
         self.node, self.events = Mock(), Mock()
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.node.config = SimpleNamespace(
+            robot=replace(
+                RobotConnection(), journal_path=str(Path(folder.name) / "dispatch.json")
+            )
+        )
+        telemetry = patch("robot_visualization.ros.telemetry.RobotTelemetry")
+        telemetry.start()
+        self.addCleanup(telemetry.stop)
+        graph = patch.object(SimulationClient, "provider_counts", return_value=[1, 1])
+        graph.start()
+        self.addCleanup(graph.stop)
+        self.query = Mock()
+        self.query.service_is_ready.return_value = False
+        self.prepare = Mock()
+        self.cancel_service = Mock()
+        self.node.create_client.side_effect = lambda kind, name: (
+            self.prepare
+            if kind is PrepareTask
+            else self.query if kind is QueryTask else self.cancel_service
+        )
         self.node.get_clock.return_value.now.return_value.to_msg.return_value = Time(
             sec=100
         )
         self.node.get_clock.return_value.now.return_value.nanoseconds = 100 * 10**9
-        self.prepare = self.node.create_client.return_value
         self.prepare.service_is_ready.return_value = True
         self.action.server_is_ready.return_value = True
         self.client = SimulationClient(self.node, self.events)
+        self.heartbeat()
         self.draft = dict(
             draft_id="draft-one",
             revision=1,
@@ -55,8 +82,25 @@ class SimulationClientTests(unittest.TestCase):
         return next(
             call.args[1]
             for call in reversed(self.events.record.emit.call_args_list)
-            if call.args[0] == "sim_task"
+            if call.args[0] == "robot_task"
         )
+
+    def heartbeat(self, boot="execution-boot"):
+        status = RobotStatus()
+        status.stamp = Time(sec=int(self.now))
+        status.source_node = self.node.config.robot.executor_node
+        status.state = status.EXECUTING if self.client.goal else status.IDLE
+        if self.client.goal:
+            status.active_task_id, status.active_dispatch_id = (
+                self.client.goal.task_id,
+                self.client.goal.dispatch_id,
+            )
+        self.client.on_status(status)
+        message = NodeHeartbeat()
+        message.node_name, message.boot_id = status.source_node, boot
+        message.sequence = self.client.heartbeat_sequence + 1
+        message.state = message.RUNNING
+        self.client.on_heartbeat(message)
 
     def start_prepare(self):
         self.prepare_future = Future()
@@ -91,10 +135,14 @@ class SimulationClientTests(unittest.TestCase):
         self.client.poll()
 
     def feedback(self, sequence=1, task_id=None):
+        self.heartbeat()
         feedback = ExecuteTask.Feedback()
         feedback.request_id = self.client.goal.request_id
         feedback.task_id = task_id or self.client.goal.task_id
         feedback.dispatch_id = self.client.goal.dispatch_id
+        feedback.task.task = deepcopy(self.client.prepare_request.task)
+        feedback.task.revision = self.client.goal.revision
+        feedback.task.active_dispatch_id = self.client.goal.dispatch_id
         feedback.task.event_seq = sequence
         feedback.task.state = feedback.task.RUNNING
         feedback.task.step = "1/4 导航到 station_a"
@@ -110,12 +158,17 @@ class SimulationClientTests(unittest.TestCase):
             goal.task_id,
             goal.dispatch_id,
         )
+        result.task.task = deepcopy(self.client.prepare_request.task)
+        result.task.revision = goal.revision
+        result.task.active_dispatch_id = goal.dispatch_id
         result.success = not canceled
         result.task.state = result.task.CANCELED if canceled else result.task.SUCCEEDED
         result.task.progress = 0.25 if canceled else 1.0
         result.error_code = "CANCELED" if canceled else ""
         result.message = "模拟执行已取消" if canceled else "模拟执行完成"
-        self.result_future.set_result(SimpleNamespace(result=result))
+        self.result_future.set_result(
+            SimpleNamespace(result=result, status=5 if canceled else 4)
+        )
         self.client.poll()
 
     def test_prepare_rejection_can_be_retried_manually_with_original_ids(self):
@@ -140,6 +193,7 @@ class SimulationClientTests(unittest.TestCase):
         request = self.start_prepare()
         self.now += 6
         self.client.poll()
+        self.heartbeat()
         self.assertTrue(self.prepare_future.cancelled())
         self.assertTrue(self.last_task()["retryable"])
         self.assertEqual(self.last_task()["error_code"], "PREPARE_TIMEOUT")
@@ -307,19 +361,9 @@ class SimulationClientTests(unittest.TestCase):
 
     def test_execution_heartbeat_keeps_long_step_alive_without_progress_feedback(self):
         self.start_execution()
-        for sequence in range(1, 31):
+        for _sequence in range(1, 31):
             self.now += 4
-            frame = dict(
-                simulator=True,
-                stamp=dict(sec=100 + sequence, nanosec=0),
-                world_fresh=True,
-                state="RUNNING",
-                boot_id="execution-boot",
-                event_seq=sequence,
-                task_id=self.client.goal.task_id,
-                dispatch_id=self.client.goal.dispatch_id,
-            )
-            self.client.on_status(SimpleNamespace(data=json.dumps(frame)))
+            self.heartbeat()
             self.client.poll()
             self.assertFalse(self.client.uncertain)
         self.assertEqual(self.action.send_goal_async.call_count, 1)
@@ -343,6 +387,136 @@ class SimulationClientTests(unittest.TestCase):
         self.client.execute(changed)
         self.action.send_goal_async.assert_not_called()
         self.assertTrue(self.last_task()["retryable"])
+
+    def test_endpoint_names_are_public_and_identical_in_both_modes(self):
+        expected = ("/task/prepare", "/task/query", "/task/cancel")
+        for name in expected:
+            self.assertIn(
+                name, [call.args[1] for call in self.node.create_client.call_args_list]
+            )
+        self.action_factory.assert_called_once_with(
+            self.node, ExecuteTask, "/task/execute"
+        )
+        self.assertNotIn("simulator", self.client.config.execute_action)
+
+    def test_non_unit_prepared_revision_is_forwarded_to_goal(self):
+        request = self.start_prepare()
+        response = PrepareTask.Response()
+        response.success, response.request_id, response.task = (
+            True,
+            request.request_id,
+            request.task,
+        )
+        response.revision = 17
+        response.confirmation_context_id = request.confirmation_context_id
+        response.confirmation_expires_at = Time(sec=400)
+        self.prepare_future.set_result(response)
+        self.client.poll()
+        self.action.send_goal_async.return_value = Future()
+        self.client.execute(self.draft)
+        self.assertEqual(self.action.send_goal_async.call_args.args[0].revision, 17)
+
+    def test_new_executor_boot_invalidates_preflight_and_blocks_dispatch(self):
+        self.accept_prepare()
+        self.heartbeat("different-boot")
+        self.assertTrue(self.client.uncertain)
+        self.client.execute(self.draft)
+        self.assertEqual(self.action.send_goal_async.call_count, 1)
+
+    def test_changed_prepared_content_is_shown_and_cannot_execute(self):
+        request = self.start_prepare()
+        response = PrepareTask.Response()
+        response.success, response.request_id = True, request.request_id
+        response.task = deepcopy(request.task)
+        response.task.candidate.destination_station_id = "station_b"
+        response.revision = 5
+        response.confirmation_context_id = request.confirmation_context_id
+        response.confirmation_expires_at = Time(sec=400)
+        self.prepare_future.set_result(response)
+        self.client.poll()
+        self.assertIsNone(self.client.prepared)
+        self.assertEqual(
+            self.last_task()["revised_candidate"]["destination_station_id"], "station_b"
+        )
+        self.client.execute(self.draft)
+        self.action.send_goal_async.assert_not_called()
+
+    def test_missing_query_keeps_original_attempt_unknown_without_resend(self):
+        self.start_execution()
+        self.now += 6
+        self.client.poll()
+        self.query.service_is_ready.return_value = True
+        future = Future()
+        self.query.call_async.return_value = future
+        self.heartbeat()
+        self.client.query()
+        request = self.query.call_async.call_args.args[0]
+        response = QueryTask.Response()
+        response.request_id = request.request_id
+        future.set_result(response)
+        self.client.poll()
+        self.assertTrue(self.client.uncertain)
+        self.assertEqual(self.action.send_goal_async.call_count, 1)
+
+    def test_restart_loads_original_dispatch_and_only_queries(self):
+        self.start_execution()
+        goal = self.client.goal
+        restored = SimulationClient(self.node, self.events)
+        self.assertEqual(restored.goal.dispatch_id, goal.dispatch_id)
+        self.assertTrue(restored.uncertain)
+        restored.execute(self.draft)
+        self.assertEqual(self.action.send_goal_async.call_count, 1)
+
+    def test_matching_query_terminal_resolves_unknown_without_new_goal(self):
+        self.start_execution()
+        self.now += 6
+        self.client.poll()
+        self.query.service_is_ready.return_value = True
+        future = Future()
+        self.query.call_async.return_value = future
+        self.heartbeat()
+        self.client.query()
+        response = QueryTask.Response()
+        response.request_id = self.query.call_async.call_args.args[0].request_id
+        response.success = response.task_found = response.dispatch_found = True
+        response.task.task = deepcopy(self.client.prepare_request.task)
+        response.task.revision = self.client.goal.revision
+        response.task.active_dispatch_id = self.client.goal.dispatch_id
+        response.task.state, response.task.progress = response.task.SUCCEEDED, 1.0
+        for field in (
+            "request_id",
+            "task_id",
+            "dispatch_id",
+            "revision",
+            "session_id",
+            "input_context_id",
+        ):
+            setattr(response.dispatch, field, getattr(self.client.goal, field))
+        response.dispatch.decision, response.dispatch.success = (
+            response.dispatch.ACCEPTED,
+            True,
+        )
+        future.set_result(response)
+        self.client.poll()
+        self.assertFalse(self.client.uncertain)
+        self.assertEqual(self.last_task()["state"], 3)
+        self.assertEqual(self.action.send_goal_async.call_count, 1)
+
+    def test_multiple_executor_providers_block_preflight(self):
+        with patch.object(self.client, "provider_counts", return_value=[2, 2]):
+            self.client.prepare(self.draft)
+        self.prepare.call_async.assert_not_called()
+        self.action.send_goal_async.assert_not_called()
+
+    def test_explicit_goal_rejection_is_retained_as_known_history_after_restart(self):
+        self.accept_prepare()
+        self.goal_future.set_result(SimpleNamespace(accepted=False))
+        self.client.poll()
+        self.assertFalse(self.client.uncertain)
+        restored = SimulationClient(self.node, self.events)
+        self.assertFalse(restored.uncertain)
+        self.assertEqual(restored.terminal_snapshot.state, 4)
+        self.assertEqual(restored.terminal_snapshot.error_code, "GOAL_REJECTED")
 
 
 if __name__ == "__main__":

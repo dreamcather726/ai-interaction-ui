@@ -1,0 +1,25 @@
+/**:
+  ros__parameters:
+    use_simulator: true
+    use_sim_time: false
+    start_backend: true
+    start_microphone: true
+    catalog_path: task_data/catalog.sqlite3
+    robot_prepare_service: /task/prepare
+    robot_execute_action: /task/execute
+    robot_query_service: /task/query
+    robot_cancel_service: /task/cancel
+    robot_snapshot_topic: /task/snapshot
+    robot_status_topic: /robot/status
+    robot_heartbeat_topic: /robot/heartbeat
+    robot_material_topic: /robot/material_state
+    robot_executor_node: /execute_task_action_server
+    robot_map_topic: /map
+    robot_camera_topic: /camera/image_raw
+    robot_odom_topic: /odom
+    robot_battery_topic: /battery
+    robot_response_timeout: 5.0
+    robot_heartbeat_timeout: 5.0
+    robot_cancel_timeout: 5.0
+    robot_telemetry_timeout: 2.0
+    robot_journal_path: task_data/simulation_dispatch.json

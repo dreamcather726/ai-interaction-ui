@@ -37,11 +37,10 @@ class DashboardNode(Node):
         super().__init__(f"voice_dashboard_{os.getpid()}")
         self.events = events
         self.config = DashboardConfig.from_node(self)
-        self.simulation = None
-        if self.config.use_simulator:
-            from robot_visualization.ros.simulation import SimulationClient
+        from robot_visualization.ros.robot import RobotClient
 
-            self.simulation = SimulationClient(self, events)
+        self.robot = RobotClient(self, events)
+        self.simulation = self.robot  # Legacy attribute; no mode-dependent client.
         audio_namespace = (
             "/simulator/audio" if self.config.use_fake_microphone else "/audio"
         )

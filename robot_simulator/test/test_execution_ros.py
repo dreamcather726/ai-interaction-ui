@@ -11,7 +11,8 @@ try:
     from builtin_interfaces.msg import Time
     from rclpy.action import GoalResponse
     from ai_edge.common.catalog import CatalogStore
-    from robot_interfaces.msg import TaskSnapshot
+    from robot_interfaces.msg import DispatchReport, TaskSnapshot
+    from robot_interfaces.srv import PrepareTask, QueryTask
     from robot_simulator.execution import SimulationExecution
     from robot_simulator.execute_task_action_server import ExecuteTaskSimulator
     from robot_simulator.robot_state_simulator_node import RobotStateSimulator
@@ -23,11 +24,89 @@ except ImportError:
 
 @unittest.skipUnless(ROS_AVAILABLE, "需要构建后的 ROS 2 消息，不启动节点")
 class SimulationContractTests(unittest.TestCase):
+    def test_prepare_is_pure_idempotent_and_revision_is_not_fixed(self):
+        clock = Mock()
+        clock.now.return_value.nanoseconds = 100 * 10**9
+        clock.now.return_value.to_msg.return_value = Time(sec=100)
+        server = SimpleNamespace(
+            lock=threading.Lock(),
+            task_records={},
+            dispatch_records={},
+            active_dispatch="",
+            catalog_error="",
+            reserved=None,
+            prepared={},
+            revision_counter=0,
+            world=SimulationExecution(),
+            get_clock=lambda: clock,
+            refresh_catalog=Mock(),
+        )
+        request = PrepareTask.Request()
+        request.request_id, request.confirmation_context_id = "prepare", "confirmation"
+        request.task.task_id = "task"
+        request.task.source_session_id = "session"
+        request.task.source_input_id = "draft:one:v1"
+        request.task.source_context_id = "context"
+        request.task.candidate.task_type = 1
+        request.task.candidate.destination_station_id = "station_a"
+        first = ExecuteTaskSimulator.prepare(server, request, PrepareTask.Response())
+        again = ExecuteTaskSimulator.prepare(server, request, PrepareTask.Response())
+        self.assertTrue(first.success)
+        self.assertEqual(first.revision, again.revision)
+        self.assertEqual(server.world.state, "IDLE")
+        self.assertEqual((server.world.x, server.world.y), (0.0, 0.0))
+        request.request_id, request.task.task_id = "new-prepare", "another-task"
+        second = ExecuteTaskSimulator.prepare(server, request, PrepareTask.Response())
+        self.assertGreater(second.revision, first.revision)
+
+    def test_query_returns_original_task_and_dispatch_or_explicit_not_found(self):
+        snapshot, dispatch = TaskSnapshot(), DispatchReport()
+        snapshot.task.task_id, snapshot.revision = "task", 7
+        dispatch.task_id, dispatch.dispatch_id = "task", "dispatch"
+        clock = Mock()
+        clock.now.return_value.to_msg.return_value = Time(sec=100)
+        server = SimpleNamespace(
+            lock=threading.Lock(),
+            task_records={"task": snapshot},
+            dispatch_records={"dispatch": dispatch},
+            active_task_id="",
+            active_dispatch="",
+            get_clock=lambda: clock,
+        )
+        request = QueryTask.Request()
+        request.request_id, request.task_id, request.dispatch_id = (
+            "query",
+            "task",
+            "dispatch",
+        )
+        found = ExecuteTaskSimulator.query(server, request, QueryTask.Response())
+        self.assertTrue(found.success)
+        self.assertEqual(found.task.revision, 7)
+        request.dispatch_id = "missing"
+        missing = ExecuteTaskSimulator.query(server, request, QueryTask.Response())
+        self.assertFalse(missing.success)
+        self.assertFalse(missing.dispatch_found)
+        self.assertEqual(missing.error_code, "TASK_NOT_FOUND")
+
+    def test_duplicate_dispatch_is_rejected_without_overwriting_original(self):
+        report = DispatchReport()
+        server = SimpleNamespace(
+            lock=threading.Lock(),
+            dispatch_records={"same": report},
+            get_logger=lambda: Mock(),
+        )
+        result = ExecuteTaskSimulator.accept(
+            server, SimpleNamespace(dispatch_id="same")
+        )
+        self.assertEqual(result, GoalResponse.REJECT)
+        self.assertIs(server.dispatch_records["same"], report)
+
     def test_invalid_scene_update_cannot_execute_a_previously_prepared_task(self):
         server = SimpleNamespace(
             lock=threading.Lock(),
             refresh_catalog=Mock(),
             prepared={"task": object()},
+            dispatch_records={},
             catalog_error="occupied station removed",
             get_clock=lambda: SimpleNamespace(
                 now=lambda: SimpleNamespace(nanoseconds=100)
@@ -35,7 +114,9 @@ class SimulationContractTests(unittest.TestCase):
             get_logger=lambda: Mock(),
             world=Mock(),
         )
-        response = ExecuteTaskSimulator.accept(server, SimpleNamespace(task_id="task"))
+        response = ExecuteTaskSimulator.accept(
+            server, SimpleNamespace(task_id="task", dispatch_id="dispatch")
+        )
         self.assertEqual(response, GoalResponse.REJECT)
         server.world.start.assert_not_called()
 
@@ -91,6 +172,7 @@ class SimulationContractTests(unittest.TestCase):
             world_publisher=Mock(),
             update_snapshot=ExecuteTaskSimulator.update_snapshot,
             snapshots=Mock(),
+            task_records={},
             sim_snapshots=Mock(),
         )
         handle = SimpleNamespace(

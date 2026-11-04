@@ -109,6 +109,21 @@ class RosWorker(QThread):
                 self.node.poll()
             if not self.isInterruptionRequested():
                 existing = set(self.node.get_node_names())
+                self.manager.executor_present = any(self.node.robot.provider_counts())
+                if (
+                    self.config.use_simulator
+                    and self.manager.executor_present
+                    and not {
+                        "map",
+                        "camera_raw",
+                        "robot_state_node",
+                        "execute_task_action_server",
+                        "play_audio_action_server",
+                    }
+                    <= existing
+                ):
+                    self.node.robot.deployment_blocked = "模拟部署发现外部任务端点，但无法核实完整模拟进程组；禁止下发，请更换隔离 ROS_DOMAIN_ID"
+                    self.report_log("[E] " + self.node.robot.deployment_blocked)
                 self.report_log(
                     "已发现节点：" + ("、".join(sorted(existing)) or "暂无")
                 )
@@ -132,11 +147,20 @@ class RosWorker(QThread):
                         "draft_simulate",
                         "draft_simulation_prepare",
                         "draft_simulation_cancel",
+                        "draft_prepare_execution",
+                        "draft_execute",
+                        "draft_cancel_execution",
+                        "draft_query_execution",
                     ):
-                        if operation == "draft_simulation_prepare":
+                        if operation in (
+                            "draft_simulation_prepare",
+                            "draft_prepare_execution",
+                        ):
                             self.node.simulation.prepare(value)
-                        elif operation == "draft_simulate":
+                        elif operation in ("draft_simulate", "draft_execute"):
                             self.node.simulation.execute(value)
+                        elif operation == "draft_query_execution":
+                            self.node.robot.query()
                         else:
                             self.node.simulation.cancel()
                     elif operation.startswith("draft_"):

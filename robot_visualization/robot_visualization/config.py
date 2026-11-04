@@ -8,6 +8,7 @@ from rclpy.parameter import Parameter
 
 from ai_edge.asr.model_paths import default_model_path
 from ai_edge.common.catalog import CatalogStore, catalog_ids
+from robot_visualization.connection import RobotConnection
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,7 @@ class DashboardConfig:
     catalog_snapshot: dict = field(default_factory=dict)
     use_simulator: bool = False
     simulator_audio_file: str = ""
+    robot: RobotConnection = field(default_factory=RobotConnection)
 
     @property
     def use_fake_microphone(self):
@@ -82,4 +84,5 @@ class DashboardConfig:
             catalog_snapshot=snapshot,
             use_simulator=node.get_parameter("use_simulator").value,
             simulator_audio_file=node.get_parameter("simulator_audio_file").value,
+            robot=RobotConnection.from_node(node),
         )

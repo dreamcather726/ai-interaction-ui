@@ -25,7 +25,7 @@ class HomeDraftWorkflow(QObject):
         window.home_save_draft_button.clicked.connect(self.save)
         window.home_confirm_draft_button.clicked.connect(self.panel.confirm)
         self.panel.command_requested.connect(self.on_command)
-        if window.simulation_view is not None:
+        if window.robot_view is not None:
             self.panel.execution_ready = False
             self.panel.confirmation_gate = self.confirm_execution
             self.panel.buttons["confirm"].setText("确认并整单执行")
@@ -33,7 +33,7 @@ class HomeDraftWorkflow(QObject):
         self.refresh()
 
     def task(self):
-        view = self.window.simulation_view
+        view = self.window.robot_view
         return view.task if view is not None else {}
 
     @Slot(str, dict)
@@ -61,7 +61,7 @@ class HomeDraftWorkflow(QObject):
             ):
                 self.submitted_key = self.draft_key(draft)
                 self.window.draft_requested.emit(
-                    "simulate", self.execution_payload(draft)
+                    "execute", self.execution_payload(draft)
                 )
                 self.refresh()
 
@@ -126,7 +126,7 @@ class HomeDraftWorkflow(QObject):
             self.authorization = None
             self.submitted_key = self.draft_key(self.panel.saved)
             self.window.draft_requested.emit(
-                "simulate", self.execution_payload(self.panel.saved)
+                "execute", self.execution_payload(self.panel.saved)
             )
             self.refresh()
 
@@ -134,6 +134,14 @@ class HomeDraftWorkflow(QObject):
         panel, window = self.panel, self.window
         try:
             plan = panel.plan()
+            suggested = self.task().get("revised_candidate")
+            if (
+                suggested
+                and not panel.dirty
+                and panel.saved
+                and self.task().get("draft_id") == panel.saved["draft_id"]
+            ):
+                plan = normalize_candidate(suggested)
             if self.prepared_ready():
                 plan = normalize_candidate(self.task()["prepared_candidate"])
             rendered = deepcopy(plan)
@@ -159,6 +167,11 @@ class HomeDraftWorkflow(QObject):
                     mapping = names["objects" if field == "object_id" else "stations"]
                     step[field] = mapping.get(step.get(field), step.get(field, ""))
             text = plan_summary(rendered)
+            if suggested:
+                text = (
+                    "执行端建议调整（未保存、未授权执行）：\n请进入编辑面板核对并保存新版本。\n\n"
+                    + text
+                )
         except ValueError:
             text = "尚无任务草稿。请加入语音候选，或点击下方按钮手动编排。"
         if text != self.preview_text:
@@ -216,7 +229,7 @@ class HomeDraftWorkflow(QObject):
             self.submitted_key = None
             self.window.retry_simulation_button.setEnabled(False)
             self.window.draft_requested.emit(
-                "simulation_prepare", self.execution_payload(self.panel.saved)
+                "prepare_execution", self.execution_payload(self.panel.saved)
             )
 
     @Slot()
@@ -234,7 +247,7 @@ class HomeDraftWorkflow(QObject):
         active = task.get("active", False)
         unknown = task.get("execution_unknown", False)
         free = not window.closing and not panel.pending and not active and not unknown
-        if window.simulation_view is not None:
+        if window.robot_view is not None:
             panel.execution_ready = self.prepared_ready()
             panel.refresh_controls()
         candidate = panel.candidate
@@ -255,7 +268,7 @@ class HomeDraftWorkflow(QObject):
         elif unknown:
             reason = "原任务结果未知，需先核实原执行；不能再次下发"
         elif active:
-            reason = "请等待当前模拟任务结束"
+            reason = "请等待当前任务结束"
         else:
             reason = "新建草稿、填入当前候选并自动保存；确认仍需手动点击"
         window.home_add_candidate_button.setToolTip(reason)
@@ -275,7 +288,7 @@ class HomeDraftWorkflow(QObject):
             and task.get("draft_id") == saved["draft_id"]
             and task.get("draft_revision") == saved["revision"]
         )
-        if window.simulation_view is not None:
+        if window.robot_view is not None:
             retryable = bool(task.get("retryable") and same_task)
             window.retry_simulation_button.setVisible(retryable)
             window.retry_simulation_button.setEnabled(
@@ -293,7 +306,7 @@ class HomeDraftWorkflow(QObject):
             status = "取消处理中，等待停止确认"
         elif active:
             step = task.get("step", "").partition(" ")[0]
-            status = "执行中，步骤 " + step if step else "正在准备模拟执行"
+            status = "执行中，步骤 " + step if step else "正在准备执行"
         elif panel.pending:
             status = {
                 "save": "草稿未保存，正在保存……",
@@ -318,13 +331,13 @@ class HomeDraftWorkflow(QObject):
         elif saved["state"] == 0:
             status = (
                 "草稿已保存，等待预检和核对"
-                if window.simulation_view is not None
+                if window.robot_view is not None
                 else "草稿已保存，等待确认"
             )
         elif saved["state"] == 1:
             status = (
-                "草稿已确认，等待模拟执行"
-                if window.simulation_view is not None
+                "草稿已确认，等待执行"
+                if window.robot_view is not None
                 else "草稿已确认"
             )
         elif saved["state"] == 2:
@@ -336,7 +349,7 @@ class HomeDraftWorkflow(QObject):
         window.home_draft_status.setText(status)
         self.refresh_preview()
         if (
-            window.simulation_view is not None
+            window.robot_view is not None
             and free
             and saved
             and not panel.dirty
@@ -347,5 +360,5 @@ class HomeDraftWorkflow(QObject):
             if key != self.preflight_requested:
                 self.preflight_requested = key
                 window.draft_requested.emit(
-                    "simulation_prepare", self.execution_payload(saved)
+                    "prepare_execution", self.execution_payload(saved)
                 )
