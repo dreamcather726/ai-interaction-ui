@@ -2,6 +2,7 @@
 
 import os
 import unittest
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -763,7 +764,7 @@ class WindowTests(unittest.TestCase):
             lambda operation, body: sent.append((operation, body))
         )
         QTest.mouseClick(window.retry_simulation_button, Qt.MouseButton.LeftButton)
-        self.assertEqual(sent[0][0], "simulate")
+        self.assertEqual(sent[0][0], "simulation_prepare")
         self.assertEqual(sent[0][1]["draft_id"], "retry-draft")
         self.assertEqual(sent[0][1]["revision"], 1)
         window.receive_record(
@@ -854,9 +855,15 @@ class WindowTests(unittest.TestCase):
             summary="A 取货后到 B 放下",
         )
         window.receive_draft(dict(operation="save", success=True, draft=saved))
-        self.assertEqual(window.home_draft_status.text(), "草稿已保存，等待确认")
+        self.assertEqual(window.command_pages.currentIndex(), 1)
+        self.assertIn("导航", window.home_draft_preview.toPlainText())
+        self.assertFalse(window.home_confirm_draft_button.isEnabled())
+        self.assertEqual(
+            [operation for operation, _ in sent], ["save", "simulation_prepare"]
+        )
+        self.deliver_preflight(saved)
         self.assertTrue(window.home_confirm_draft_button.isEnabled())
-        self.assertEqual([operation for operation, _ in sent], ["save"])
+        self.assertIn("预检通过", window.home_draft_status.text())
         QTest.mouseClick(window.home_confirm_draft_button, Qt.MouseButton.LeftButton)
         self.assertEqual(sent[-1][0], "confirm")
         self.assertEqual(sent[-1][1]["confirmation_token"], "home-token")
@@ -868,7 +875,8 @@ class WindowTests(unittest.TestCase):
             )
         )
         self.assertEqual(
-            [operation for operation, _ in sent], ["save", "confirm", "simulate"]
+            [operation for operation, _ in sent],
+            ["save", "simulation_prepare", "confirm", "simulate"],
         )
         task = dict(
             task_id="home-task",
@@ -877,6 +885,7 @@ class WindowTests(unittest.TestCase):
             active=True,
             failed=False,
             state=1,
+            prepared=False,
         )
         window.receive_record("sim_task", dict(task, progress=0.0, step=""))
         self.assertEqual(window.stage_progress.value(), 0)
@@ -923,7 +932,9 @@ class WindowTests(unittest.TestCase):
             source_request_ids=list(next_body["source_request_ids"]),
         )
         window.receive_draft(dict(operation="save", success=True, draft=next_draft))
-        self.assertEqual(window.home_draft_status.text(), "草稿已保存，等待确认")
+        self.assertIn("等待预检", window.home_draft_status.text())
+        self.deliver_preflight(next_draft)
+        QTest.mouseClick(window.home_confirm_draft_button, Qt.MouseButton.LeftButton)
         window.receive_draft(
             dict(
                 operation="confirm",
@@ -945,6 +956,65 @@ class WindowTests(unittest.TestCase):
         )
         self.assertIn("执行失败", window.home_draft_status.text())
         self.assertEqual(window.stage_progress.value(), 0)
+
+    def deliver_preflight(self, saved):
+        self.window.receive_record(
+            "sim_task",
+            dict(
+                task_id="prepared-" + saved["draft_id"],
+                draft_id=saved["draft_id"],
+                draft_revision=saved["revision"],
+                catalog_revision=self.window.catalog_snapshot["revision"],
+                draft_boot_id=saved["boot_id"],
+                active=False,
+                failed=False,
+                execution_unknown=False,
+                prepared=True,
+                preparation_pending=False,
+                retryable=False,
+                state=0,
+                canceling=False,
+                prepared_until=time.monotonic() + 300,
+                prepared_candidate=saved["candidate"],
+                progress=0.0,
+                message="预检通过，请核对草稿",
+            ),
+        )
+
+    def test_stale_preflight_and_unsolicited_review_cannot_start_execution(self):
+        self._prepare_home_candidate()
+        window, panel = self.window, self.window.draft_panel
+        panel.add_candidate()
+        saved = dict(
+            draft_id="reviewed",
+            revision=1,
+            event_seq=1,
+            boot_id="boot-one",
+            state=0,
+            session_id=panel.session,
+            input_context_id=panel.context,
+            source_request_ids=list(panel.sources),
+            candidate=panel.plan(),
+            confirmation_token="token",
+            summary="搬运",
+        )
+        window.receive_draft(dict(operation="save", success=True, draft=saved))
+        self.deliver_preflight(saved)
+        sent = []
+        window.draft_requested.connect(lambda operation, body: sent.append(operation))
+        window.receive_draft(
+            dict(
+                operation="confirm",
+                success=True,
+                draft=dict(saved, state=1, event_seq=2),
+            )
+        )
+        self.assertNotIn("simulate", sent)
+        # Expired preflight disables both home and editor confirmation controls.
+        window.simulation_view.task["prepared_until"] = 0
+        window.home_drafts.refresh()
+        self.assertFalse(window.home_confirm_draft_button.isEnabled())
+        self.assertFalse(panel.buttons["confirm"].isEnabled())
 
     def test_home_save_failure_retains_steps_and_cannot_confirm(self):
         self._prepare_home_candidate()

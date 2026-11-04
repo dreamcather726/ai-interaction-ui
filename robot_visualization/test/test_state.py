@@ -182,7 +182,14 @@ class SupervisorRulesTests(unittest.TestCase):
         )
         self.assertEqual(
             simulated["robot_simulator"],
-            ["ros2", "launch", "robot_simulator", "simulator_all.launch.py"],
+            [
+                "ros2",
+                "launch",
+                "robot_simulator",
+                "simulator_all.launch.py",
+                "catalog_path:="
+                + str(config.audio_root.parent / "task_data/catalog.sqlite3"),
+            ],
         )
         for name in (
             "asr_node",

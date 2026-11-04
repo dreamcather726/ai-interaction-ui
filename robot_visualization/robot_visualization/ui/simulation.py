@@ -66,9 +66,9 @@ class SimulationView:
         self.task = {}
         window.setWindowTitle(window.windowTitle() + " · SIM 模拟模式")
         window.system_badge.update_status("● SIM 模拟模式", "warn")
-        window.draft_panel.buttons["confirm"].setText("确认并模拟执行")
+        window.draft_panel.buttons["confirm"].setText("确认并整单执行")
         window.draft_panel.buttons["confirm"].setToolTip(
-            "确认成功后调用专用模拟执行接口，不向真实机器人发送任务"
+            "先核对完整草稿，预检通过后确认；整份任务由模拟执行端自主运行"
         )
         window.stage_progress.setFormat("模拟执行进度 %p%")
         window.cancel_simulation_button.clicked.connect(
@@ -172,6 +172,17 @@ class SimulationView:
             if not self.touch(kind, value):
                 return
             self.status = value
+            scene_error = value.get("scene_error")
+            if scene_error:
+                window.simulation_scene_hint.setText("模拟场景未就绪：" + scene_error)
+            elif value.get("catalog_scene"):
+                window.simulation_scene_hint.setText(
+                    "工位／物料已同步管理资料 · 自动坐标仅用于仿真"
+                )
+            else:
+                window.simulation_scene_hint.setText(
+                    "独立模拟场景；自定义工位需指定相同 catalog_path"
+                )
             self.render_position()
             self.render_chassis()
             self.render_camera_status()
@@ -304,7 +315,9 @@ class SimulationView:
         }
         for station, coordinates in stations.items():
             location = point(*coordinates)
-            name = {"station_a": "A", "station_b": "B"}.get(station, station)
+            name = self.status.get("station_names", {}).get(
+                station, {"station_a": "A", "station_b": "B"}.get(station, station)
+            )
             painter.setBrush(QColor("#d2e5ff"))
             painter.drawEllipse(location, 9, 9)
             painter.drawText(location + QPointF(12, -10), name)
@@ -357,8 +370,14 @@ class SimulationView:
             title, summary, tone = "执行结果未知", "结果未知", "warn"
         elif active and canceling:
             title, summary, tone = "等待停止确认", "等待停止确认", "warn"
+        elif task.get("preparation_pending"):
+            title, summary, tone = "正在预检草稿", "预检中，尚未执行", "active"
+        elif task.get("prepared"):
+            title, summary, tone = "预检通过，等待确认", "待你确认整单执行", "good"
         elif active:
             title, summary, tone = "模拟执行中", "任务执行中", "active"
+        elif failed and task.get("retryable"):
+            title, summary, tone = "预检未通过", "尚未执行，等待处理", "warn"
         elif failed:
             title, summary, tone = "模拟失败/取消", "任务失败／取消", "bad"
         elif task.get("state") == 3:
@@ -388,5 +407,7 @@ class SimulationView:
             and not canceling
         )
         window.cancel_simulation_button.setText(
-            "等待停止确认" if canceling else "取消模拟执行"
+            "等待停止确认"
+            if canceling
+            else "取消预检" if task.get("preparation_pending") else "取消模拟执行"
         )

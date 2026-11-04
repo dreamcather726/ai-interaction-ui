@@ -1,6 +1,7 @@
 """Client protocol regressions using controlled futures/time; no nodes or hardware."""
 
 from concurrent.futures import Future
+import json
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
@@ -36,6 +37,7 @@ class SimulationClientTests(unittest.TestCase):
         self.node.get_clock.return_value.now.return_value.to_msg.return_value = Time(
             sec=100
         )
+        self.node.get_clock.return_value.now.return_value.nanoseconds = 100 * 10**9
         self.prepare = self.node.create_client.return_value
         self.prepare.service_is_ready.return_value = True
         self.action.server_is_ready.return_value = True
@@ -50,12 +52,16 @@ class SimulationClientTests(unittest.TestCase):
         )
 
     def last_task(self):
-        return self.events.record.emit.call_args.args[1]
+        return next(
+            call.args[1]
+            for call in reversed(self.events.record.emit.call_args_list)
+            if call.args[0] == "sim_task"
+        )
 
     def start_prepare(self):
         self.prepare_future = Future()
         self.prepare.call_async.return_value = self.prepare_future
-        self.client.execute(self.draft)
+        self.client.prepare(self.draft)
         return self.prepare.call_async.call_args.args[0]
 
     def accept_prepare(self):
@@ -66,10 +72,13 @@ class SimulationClientTests(unittest.TestCase):
         response.task = request.task
         response.revision = 1
         response.confirmation_context_id = request.confirmation_context_id
+        response.confirmation_expires_at = Time(sec=400)
         self.goal_future = Future()
         self.action.send_goal_async.return_value = self.goal_future
         self.prepare_future.set_result(response)
         self.client.poll()
+        self.action.send_goal_async.assert_not_called()
+        self.client.execute(self.draft)
 
     def start_execution(self):
         self.accept_prepare()
@@ -238,9 +247,12 @@ class SimulationClientTests(unittest.TestCase):
         response.task = request.task
         response.revision = 1
         response.confirmation_context_id = request.confirmation_context_id
+        response.confirmation_expires_at = Time(sec=400)
         self.action.send_goal_async.side_effect = RuntimeError("transport unavailable")
         self.prepare_future.set_result(response)
         self.client.poll()
+        self.action.send_goal_async.assert_not_called()
+        self.client.execute(self.draft)
         self.assertTrue(self.last_task()["execution_unknown"])
         self.assertFalse(self.last_task()["retryable"])
         self.client.execute(self.draft)
@@ -271,6 +283,66 @@ class SimulationClientTests(unittest.TestCase):
         self.now += 6
         self.client.poll()
         self.assertEqual(self.last_task()["error_code"], "CANCEL_NOT_CONFIRMED")
+
+    def test_preflight_never_sends_goal_until_matching_review_is_confirmed(self):
+        self.draft["state"] = 0
+        request = self.start_prepare()
+        response = PrepareTask.Response()
+        response.success = True
+        response.request_id = request.request_id
+        response.task = request.task
+        response.revision = 1
+        response.confirmation_context_id = request.confirmation_context_id
+        response.confirmation_expires_at = Time(sec=400)
+        self.prepare_future.set_result(response)
+        self.client.poll()
+        self.assertTrue(self.last_task()["prepared"])
+        self.assertFalse(self.last_task()["active"])
+        self.action.send_goal_async.assert_not_called()
+        self.assertEqual(self.client.prepared.task.task_id, request.task.task_id)
+        self.draft["state"] = 1
+        self.action.send_goal_async.return_value = Future()
+        self.client.execute(self.draft)
+        self.action.send_goal_async.assert_called_once()
+
+    def test_execution_heartbeat_keeps_long_step_alive_without_progress_feedback(self):
+        self.start_execution()
+        for sequence in range(1, 31):
+            self.now += 4
+            frame = dict(
+                simulator=True,
+                stamp=dict(sec=100 + sequence, nanosec=0),
+                world_fresh=True,
+                state="RUNNING",
+                boot_id="execution-boot",
+                event_seq=sequence,
+                task_id=self.client.goal.task_id,
+                dispatch_id=self.client.goal.dispatch_id,
+            )
+            self.client.on_status(SimpleNamespace(data=json.dumps(frame)))
+            self.client.poll()
+            self.assertFalse(self.client.uncertain)
+        self.assertEqual(self.action.send_goal_async.call_count, 1)
+        self.now += 6
+        self.client.poll()
+        self.assertTrue(self.last_task()["execution_unknown"])
+
+    def test_changed_draft_cannot_use_an_old_preflight(self):
+        self.draft["state"] = 0
+        request = self.start_prepare()
+        response = PrepareTask.Response()
+        response.success = True
+        response.request_id = request.request_id
+        response.task = request.task
+        response.revision = 1
+        response.confirmation_context_id = request.confirmation_context_id
+        response.confirmation_expires_at = Time(sec=400)
+        self.prepare_future.set_result(response)
+        self.client.poll()
+        changed = dict(self.draft, state=1, revision=2)
+        self.client.execute(changed)
+        self.action.send_goal_async.assert_not_called()
+        self.assertTrue(self.last_task()["retryable"])
 
 
 if __name__ == "__main__":

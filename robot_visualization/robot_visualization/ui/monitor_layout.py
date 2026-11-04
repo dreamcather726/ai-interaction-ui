@@ -305,6 +305,10 @@ def build_camera(window):
 def build_commands(window):
     card = compact_card("AI 指令 / 当前语音任务")
     icon_heading(window, card, QStyle.StandardPixmap.SP_MediaVolume)
+    window.command_pages = PageTabs()
+    source_page = QWidget()
+    source_body = QVBoxLayout(source_page)
+    source_body.setContentsMargins(0, 0, 0, 0)
     window.input_tabs = PageTabs()
     voice = QWidget()
     layout = QVBoxLayout(voice)
@@ -333,8 +337,8 @@ def build_commands(window):
     layout.addWidget(window.control_message)
     window.input_tabs.addTab(voice, "语音输入")
     window.input_tabs.addTab(label("文本指令待接入", "muted"), "文本指令")
-    card.body.addWidget(window.input_tabs)
-    card.body.addWidget(label("解析结果（结构化指令）", "section"))
+    source_body.addWidget(window.input_tabs)
+    source_body.addWidget(label("解析结果（结构化指令）", "section"))
     parsed = QHBoxLayout()
     parsed.setSpacing(6)
     window.asr_text, window.candidate_text = PagedText(), PagedText()
@@ -347,21 +351,41 @@ def build_commands(window):
         column.addWidget(label(title, "muted"))
         column.addWidget(view, 1)
         parsed.addLayout(column, stretch)
-    card.body.addLayout(parsed, 1)
+    source_body.addLayout(parsed, 1)
     window.dialogue_hint = ElidedLabel()
     window.dialogue_hint.hide()
-    card.body.addWidget(window.dialogue_hint)
+    source_body.addWidget(window.dialogue_hint)
     window.home_add_candidate_button = QPushButton("加入当前候选到草稿")
     window.home_add_candidate_button.setObjectName("primary")
     window.home_add_candidate_button.setEnabled(False)
-    card.body.addWidget(window.home_add_candidate_button)
+    source_body.addWidget(window.home_add_candidate_button)
     window.home_draft_hint = ElidedLabel(
-        "确认草稿后将自动下发模拟执行"
+        "加入后查看完整草稿；预检通过后由你确认整单执行"
         if getattr(window.config, "use_simulator", False)
         else "确认草稿只记录审阅结果；真实执行尚未接入"
     )
     window.home_draft_hint.setObjectName("muted")
-    card.body.addWidget(window.home_draft_hint)
+    source_body.addWidget(window.home_draft_hint)
+    window.command_pages.addTab(source_page, "语音与候选")
+    draft_page = QWidget()
+    draft_body = QVBoxLayout(draft_page)
+    draft_body.setContentsMargins(0, 2, 0, 0)
+    window.home_draft_identity = ElidedLabel("尚无任务草稿")
+    draft_body.addWidget(window.home_draft_identity)
+    window.home_draft_preview = PagedText(
+        "识别后点击“加入当前候选到草稿”，在这里逐步核对。"
+    )
+    draft_body.addWidget(window.home_draft_preview, 1)
+    window.home_edit_draft_button = QPushButton("编辑完整草稿（增删／调整顺序）")
+    window.home_edit_draft_button.clicked.connect(
+        lambda: window.switch_page(window.page_indexes["任务管理"])
+    )
+    draft_body.addWidget(window.home_edit_draft_button)
+    draft_body.addWidget(
+        label("确认入口在右侧任务流程卡片底部；执行端自主运行整份任务。", "muted", True)
+    )
+    window.command_pages.addTab(draft_page, "任务草稿 · 确认前核对")
+    card.body.addWidget(window.command_pages, 1)
     return card
 
 
@@ -409,6 +433,11 @@ def build_progress(window):
     if getattr(window.config, "use_simulator", False):
         window.material_state_label = ElidedLabel("持有物料：等待反馈")
         info.body.addWidget(window.material_state_label)
+        window.simulation_scene_hint = ElidedLabel(
+            "工位／物料将同步管理资料；坐标仅用于仿真"
+        )
+        window.simulation_scene_hint.setObjectName("muted")
+        info.body.addWidget(window.simulation_scene_hint)
     info.body.addStretch()
     details.addWidget(current, 3)
     details.addWidget(info, 2)
@@ -425,7 +454,11 @@ def build_progress(window):
     window.home_save_draft_button.setObjectName("small")
     window.home_save_draft_button.setEnabled(False)
     draft_actions.addWidget(window.home_save_draft_button)
-    window.home_confirm_draft_button = QPushButton("立即确认")
+    window.home_confirm_draft_button = QPushButton(
+        "确认并整单执行"
+        if getattr(window.config, "use_simulator", False)
+        else "确认草稿"
+    )
     window.home_confirm_draft_button.setObjectName("primary")
     window.home_confirm_draft_button.setEnabled(False)
     draft_actions.addWidget(window.home_confirm_draft_button)

@@ -16,6 +16,8 @@ def generate_launch_description():
         DeclareLaunchArgument("linear_speed", default_value="0.8"),
         DeclareLaunchArgument("step_timeout", default_value="60.0"),
         DeclareLaunchArgument("fail_step", default_value="0"),
+        DeclareLaunchArgument("catalog_path", default_value=""),
+        DeclareLaunchArgument("feedback_period", default_value="1.0"),
         DeclareLaunchArgument(
             "stations_json",
             default_value='{"station_a":[-2.0,0.0],"station_b":[2.0,0.0]}',
@@ -32,13 +34,27 @@ def generate_launch_description():
     }
     nodes = []
     for executable, node_name, parameters in (
-        ("map_simulator_node", "map", {}),
+        (
+            "map_simulator_node",
+            "map",
+            {
+                "catalog_path": ParameterValue(
+                    LaunchConfiguration("catalog_path"), value_type=str
+                )
+            },
+        ),
         ("camera_simulator_node", "camera_raw", camera),
         ("robot_state_simulator_node", "robot_state_node", {}),
         (
             "execute_task_action_server",
             "execute_task_action_server",
             {
+                "catalog_path": ParameterValue(
+                    LaunchConfiguration("catalog_path"), value_type=str
+                ),
+                "feedback_period": ParameterValue(
+                    LaunchConfiguration("feedback_period"), value_type=float
+                ),
                 "step_seconds": ParameterValue(
                     LaunchConfiguration("step_seconds"), value_type=float
                 ),

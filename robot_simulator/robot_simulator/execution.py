@@ -85,6 +85,48 @@ class SimulationExecution:
             raise ExecutionError("UNKNOWN_STATION", f"模拟地图未配置工位 {station}")
         return self.stations[station]
 
+    def sync_catalog(self, station_ids, object_ids, *, initial=False):
+        """Assign SIM-only coordinates; preserve established material locations."""
+        if self.state == "RUNNING":
+            raise ExecutionError("TASK_BUSY", "执行期间不修改模拟场景，完成后同步资料")
+        if not station_ids:
+            raise ExecutionError("UNKNOWN_STATION", "请先在工位管理中添加并启用工位")
+        if (
+            len(station_ids) > 128
+            or len(object_ids) > 128
+            or len(set(station_ids)) != len(station_ids)
+            or len(set(object_ids)) != len(object_ids)
+        ):
+            raise ExecutionError("INVALID_REQUEST", "模拟资料每类最多128条，ID不得重复")
+        if initial and (self.steps or self.held_object):
+            raise ExecutionError("SCENE_CONFLICT", "已有执行状态，不能重新初始化场景")
+        previous = {} if initial else self.stations
+        stations = {key: previous[key] for key in station_ids if key in previous}
+        slots = [(-2.0, 0.0), (2.0, 0.0)] + [
+            (x * 0.65, y * 0.65) for y in range(-6, 7) for x in range(-6, 7)
+        ]
+        occupied = set(stations.values())
+        for key in station_ids:
+            if key not in stations:
+                point = next(point for point in slots if point not in occupied)
+                stations[key] = point
+                occupied.add(point)
+        if self.held_object and self.held_object not in object_ids:
+            raise ExecutionError(
+                "SCENE_CONFLICT", "仍持有物料，不能从资料中移除；请先完成放置"
+            )
+        previous_objects = {} if initial else self.objects
+        objects = {}
+        for key in object_ids:
+            location = previous_objects.get(key, station_ids[0])
+            if location not in stations and key != self.held_object:
+                raise ExecutionError(
+                    "SCENE_CONFLICT",
+                    f"物料 {key} 仍在已移除的工位 {location}，请先处置物料或重启模拟场景",
+                )
+            objects[key] = location
+        self.stations, self.objects = stations, objects
+
     def _check_action(self, kind, station, object_id, x, y, held, objects):
         target = self._station(station)
         if kind not in ("NAVIGATE", "PICK", "PLACE"):

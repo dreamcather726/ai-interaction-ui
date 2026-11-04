@@ -35,7 +35,7 @@ def glyph_pixels(text, x, y, scale=1):
                             ) * scale + dx, y + row * scale + dy
 
 
-def occupancy_grid():
+def occupancy_grid(*, show_labels=True):
     """200 x 200 cells, origin (-5,-5), 5 cm/cell; all unoccupied cells known free."""
     size = 200
     cells = [0] * (size * size)
@@ -61,7 +61,7 @@ def occupancy_grid():
         if not 92 <= y <= 108:
             mark(40, y)
             mark(160, y)
-    for text, x in (("A", 58), ("B", 138)):
+    for text, x in ((("A", 58), ("B", 138)) if show_labels else ()):
         for px, py in glyph_pixels(text, x, 113, 2):
             mark(px, 113 - (py - 113))  # Bitmap rows run downward; map Y runs upward.
     return cells

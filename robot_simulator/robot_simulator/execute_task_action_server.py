@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import sqlite3
 import threading
 import time
 from uuid import uuid4
@@ -26,6 +27,11 @@ class ExecuteTaskSimulator(Node):
         self.declare_parameter("linear_speed", 0.8)
         self.declare_parameter("step_timeout", 60.0)
         self.declare_parameter("fail_step", 0)
+        self.declare_parameter("catalog_path", "")
+        self.declare_parameter("feedback_period", 1.0)
+        self.feedback_period = self.get_parameter("feedback_period").value
+        if not 0 <= self.feedback_period <= 30:
+            raise ValueError("feedback_period 必须在[0,30]内；0只在步骤变化和终态反馈")
         self.declare_parameter(
             "stations_json", '{"station_a":[-2.0,0.0],"station_b":[2.0,0.0]}'
         )
@@ -47,6 +53,17 @@ class ExecuteTaskSimulator(Node):
         self.active_task_id = ""
         self.shutdown_event = threading.Event()
         self.prepared = {}
+        self.catalog = None
+        self.catalog_revision = None
+        self.catalog_initialized = False
+        self.catalog_error = ""
+        self.station_names = {}
+        self.last_catalog_check = 0.0
+        catalog_path = self.get_parameter("catalog_path").value
+        if catalog_path:
+            from ai_edge.common.catalog import CatalogStore
+
+            self.catalog = CatalogStore(catalog_path)
         self.active_dispatch = ""
         self.reserved = None
         self.sequence = 0
@@ -115,6 +132,15 @@ class ExecuteTaskSimulator(Node):
                 raise ValueError("任务来源、ID 或确认上下文无效")
             steps = expand_steps(task.candidate)
             with self.lock:
+                if self.active_dispatch:
+                    raise ExecutionError(
+                        "ROBOT_BUSY", "执行端正在运行整份任务，请等待完成后再预检"
+                    )
+                self.refresh_catalog(force=True)
+                if self.catalog_error:
+                    raise ExecutionError(
+                        "SCENE_CONFIGURATION_FAILED", self.catalog_error
+                    )
                 if self.reserved and self.reserved[0].task_id == task.task_id:
                     raise ValueError("同一任务正在模拟执行")
                 self.world.validate_plan(steps)
@@ -141,10 +167,50 @@ class ExecuteTaskSimulator(Node):
             ), str(exc)
         return response
 
+    def refresh_catalog(self, *, force=False):
+        """Caller owns the world lock. Active tasks keep their accepted scene."""
+        if self.catalog is None or self.active_dispatch:
+            return
+        now = time.monotonic()
+        if not force and now - self.last_catalog_check < 1.0:
+            return
+        self.last_catalog_check = now
+        try:
+            snapshot = self.catalog.read()
+            if snapshot["revision"] == self.catalog_revision:
+                self.catalog_error = ""
+                return
+            stations = [row["id"] for row in snapshot["stations"] if row["enabled"]]
+            objects = [row["id"] for row in snapshot["objects"] if row["enabled"]]
+            self.world.sync_catalog(
+                stations, objects, initial=not self.catalog_initialized
+            )
+            self.station_names = {
+                row["id"]: row["name"] for row in snapshot["stations"] if row["enabled"]
+            }
+            self.catalog_revision = snapshot["revision"]
+            self.catalog_initialized = True
+            self.catalog_error = ""
+            self.prepared.clear()
+            self.get_logger().info(
+                f"[SIM] 工位／物料已同步，资料版本 {self.catalog_revision}；自动布点仅用于仿真，新物料初始位于 {stations[0]}"
+            )
+        except (ValueError, sqlite3.Error, OSError) as exc:
+            message = str(exc)
+            if message != self.catalog_error:
+                self.get_logger().warning(f"[SIM] 场景配置未就绪：{message}")
+            self.catalog_error = message
+
     def accept(self, request):
         with self.lock:
+            self.refresh_catalog(force=True)
             prepared = self.prepared.get(request.task_id)
             now = self.get_clock().now().nanoseconds
+            if self.catalog_error:
+                self.get_logger().warning(
+                    f"[SIM] 拒绝执行：场景资料尚未同步成功；{self.catalog_error}"
+                )
+                return GoalResponse.REJECT
             if self.active_dispatch or prepared is None:
                 self.get_logger().warning(
                     "[SIM] 拒绝执行：正在执行其他任务，或未 PrepareTask"
@@ -182,11 +248,16 @@ class ExecuteTaskSimulator(Node):
             stamp={"sec": stamp.sec, "nanosec": stamp.nanosec},
             task_id=self.active_task_id,
             dispatch_id=self.active_dispatch,
+            station_names=self.station_names,
+            catalog_revision=self.catalog_revision,
+            scene_error=self.catalog_error,
+            catalog_scene=self.catalog is not None,
         )
         return frame
 
     def publish_world(self):
         with self.lock:
+            self.refresh_catalog()
             frame = self.world_frame(self.get_clock().now().to_msg())
             self.world_publisher.publish(
                 String(data=json.dumps(frame, ensure_ascii=False))
@@ -273,7 +344,10 @@ class ExecuteTaskSimulator(Node):
                 last_tick = now
                 if frame["state"] != "RUNNING":
                     break
-                if frame["step"] != last_step or now - last_feedback >= 0.1:
+                if frame["step"] != last_step or (
+                    self.feedback_period > 0
+                    and now - last_feedback >= self.feedback_period
+                ):
                     self.publish(handle, snapshot, "[SIM] " + frame["message"])
                     if frame["step"] != last_step:
                         self.get_logger().info(f"[SIM] 开始动作：{frame['step']}")

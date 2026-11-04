@@ -130,9 +130,12 @@ class RosWorker(QThread):
                         self.catalog_command(operation.removeprefix("catalog_"), value)
                     elif self.node.simulation is not None and operation in (
                         "draft_simulate",
+                        "draft_simulation_prepare",
                         "draft_simulation_cancel",
                     ):
-                        if operation == "draft_simulate":
+                        if operation == "draft_simulation_prepare":
+                            self.node.simulation.prepare(value)
+                        elif operation == "draft_simulate":
                             self.node.simulation.execute(value)
                         else:
                             self.node.simulation.cancel()

@@ -10,6 +10,8 @@ from robot_simulator.scene import occupancy_grid
 class MapSimulator(Node):
     def __init__(self):
         super().__init__("map")
+        self.declare_parameter("catalog_path", "")
+        show_labels = not bool(self.get_parameter("catalog_path").value)
         self.map_pub = self.create_publisher(OccupancyGrid, "/map", latched_qos())
         self.metadata_pub = self.create_publisher(
             MapMetaData, "/map_metadata", latched_qos()
@@ -22,11 +24,11 @@ class MapSimulator(Node):
         message.info.width = message.info.height = 200
         message.info.origin.position.x = message.info.origin.position.y = -5.0
         message.info.origin.orientation.w = 1.0
-        message.data = occupancy_grid()
+        message.data = occupancy_grid(show_labels=show_labels)
         self.map_pub.publish(message)
         self.metadata_pub.publish(message.info)
         self.get_logger().info(
-            "[SIM] 10m × 10m 地图已发布；A=(-2,0)，B=(2,0)，支持迟到订阅者"
+            "[SIM] 10m × 10m 地图已发布；工位标记由执行场景提供，支持迟到订阅者"
         )
 
 

@@ -17,11 +17,15 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("auto_play", default_value="true"),
             DeclareLaunchArgument("loop", default_value="true"),
+            DeclareLaunchArgument("catalog_path", default_value=""),
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
                     get_package_share_directory("robot_simulator")
                     + "/launch/simulator_all.launch.py"
-                )
+                ),
+                launch_arguments={
+                    "catalog_path": LaunchConfiguration("catalog_path")
+                }.items(),
             ),
             Node(
                 package="robot_simulator",

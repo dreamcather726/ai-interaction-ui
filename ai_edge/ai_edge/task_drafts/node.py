@@ -108,7 +108,7 @@ class TaskDraftNode(Node):
             response.success = True
             response.message = {
                 "save": "草稿已保存，请逐步核对后确认",
-                "confirm": "草稿已确认并保存；等待执行接口对接，机器人尚未执行",
+                "confirm": "草稿已审阅并保存；执行状态以独立任务下发和执行端反馈为准",
                 "cancel": "草稿已取消；此操作不代替机器人运动取消接口",
             }[operation]
             self.publisher.publish(response.draft)

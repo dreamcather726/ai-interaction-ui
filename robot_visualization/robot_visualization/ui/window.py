@@ -151,13 +151,6 @@ class DashboardWindow(QMainWindow):
     def receive_draft(self, value):
         self.draft_panel.receive(value)
         self.home_drafts.receive(value)
-        if (
-            self.simulation_view is not None
-            and value.get("operation") == "confirm"
-            and value.get("success")
-            and value.get("draft", {}).get("state") == 1
-        ):
-            self.draft_requested.emit("simulate", value["draft"])
         if value.get("message"):
             self.append_log(
                 format_log(
@@ -366,7 +359,7 @@ class DashboardWindow(QMainWindow):
             )
         elif parsed.get("outcome") == 0 and parsed.get("success"):
             self.dialogue_hint.setText(
-                "候选信息已完整，可在下方加入草稿；保存成功后点击“立即确认”。"
+                "候选信息已完整，可加入草稿；在“任务草稿”页签核对完整动作后确认。"
             )
         else:
             self.dialogue_hint.clear()

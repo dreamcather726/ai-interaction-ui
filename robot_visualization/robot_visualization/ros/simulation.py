@@ -3,8 +3,10 @@
 import json
 import time
 from uuid import uuid4
+from copy import deepcopy
 
 from ai_edge.semantic.ros_candidates import assign_candidate
+from ai_edge.semantic.semantic_contract import candidate_payload
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rclpy.action import ActionClient
 from rclpy.qos import (
@@ -41,6 +43,10 @@ class SimulationClient:
         self.last_feedback_seq = 0
         self.attempt_key = None
         self.prepare_request = None
+        self.prepared = None
+        self.prepared_signature = None
+        self.last_status_sequence = 0
+        self.execution_boot = None
         self.dispatched = set()
         self.source_draft = {}
         self.subscriptions = [
@@ -135,6 +141,24 @@ class SimulationClient:
                 stamp = value.get("stamp", {})
                 value["stamp_ns"] = int(stamp["sec"]) * 10**9 + int(stamp["nanosec"])
                 self.events.record.emit("sim_status", value)
+                if (
+                    self.pending is not None
+                    and self.pending[0] == "result"
+                    and self.goal is not None
+                    and value.get("world_fresh") is True
+                    and value.get("state") == "RUNNING"
+                    and (value.get("task_id"), value.get("dispatch_id"))
+                    == (self.goal.task_id, self.goal.dispatch_id)
+                    and value.get("event_seq", 0) > self.last_status_sequence
+                ):
+                    boot = value.get("boot_id")
+                    if not boot or (
+                        self.execution_boot is not None and boot != self.execution_boot
+                    ):
+                        return
+                    self.execution_boot = boot
+                    self.last_status_sequence = value["event_seq"]
+                    self.observe_liveness()
         except (ValueError, TypeError, KeyError):
             pass
 
@@ -166,6 +190,7 @@ class SimulationClient:
     def preparation_failed(self, message, code):
         """No ExecuteTask was sent: explicit retry may reuse the same preparation IDs."""
         self.pending = None
+        self.prepared = None
         self.events.report_log("[E] [SIM] " + message)
         self.emit_task(
             dict(
@@ -176,8 +201,10 @@ class SimulationClient:
                 failed=True,
                 state=4,
                 retryable=True,
+                prepared=False,
+                preparation_pending=False,
                 error_code=code,
-                message=message + "；尚未发送执行 Goal，可人工重试准备",
+                message=message + "；尚未下发执行，可点击“重试准备”",
             )
         )
 
@@ -202,7 +229,27 @@ class SimulationClient:
             )
         )
 
-    def execute(self, draft):
+    @staticmethod
+    def draft_signature(draft):
+        return json.dumps(
+            [
+                draft.get(name)
+                for name in (
+                    "draft_id",
+                    "revision",
+                    "boot_id",
+                    "session_id",
+                    "input_context_id",
+                    "catalog_revision",
+                )
+            ]
+            + [normalize_candidate(draft["candidate"])],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+
+    def prepare(self, draft):
+        """Preflight only. A matching explicit confirmation must call execute later."""
         if self.pending is not None or self.uncertain:
             self.events.report_log("[E] [SIM] 原任务仍在处理或结果未知，不接受新执行")
             return
@@ -210,11 +257,21 @@ class SimulationClient:
         if key in self.dispatched:
             self.events.report_log("[E] [SIM] 此版本已下发过执行，不重复提交")
             return
-        self.source_draft = {"draft_id": key[0], "draft_revision": key[1]}
+        self.source_draft = {
+            "draft_id": key[0],
+            "draft_revision": key[1],
+            "draft_boot_id": draft.get("boot_id"),
+            "catalog_revision": draft.get("catalog_revision"),
+        }
         try:
-            if draft.get("state") != 1:
-                raise ValueError("只能模拟执行明确确认的草稿")
-            if key != self.attempt_key or self.prepare_request is None:
+            if draft.get("state") not in (0, 1):
+                raise ValueError("只能预检已保存且有效的草稿")
+            signature = self.draft_signature(draft)
+            if (
+                key != self.attempt_key
+                or self.prepare_request is None
+                or signature != self.prepared_signature
+            ):
                 self.goal = None
                 request = PrepareTask.Request()
                 request.stamp = self.node.get_clock().now().to_msg()
@@ -224,7 +281,9 @@ class SimulationClient:
                 request.task.interface_version = "0.3.1"
                 request.task.task_id = "sim-task-" + uuid4().hex
                 request.task.source_session_id = draft["session_id"]
-                request.task.source_input_id = draft["draft_id"]
+                request.task.source_input_id = (
+                    f"draft:{draft['draft_id']}:v{draft['revision']}"
+                )
                 request.task.source_context_id = draft["input_context_id"]
                 assign_candidate(
                     request.task.candidate,
@@ -238,10 +297,14 @@ class SimulationClient:
                 self.goal.session_id = draft["session_id"]
                 self.goal.input_context_id = request.confirmation_context_id
                 self.prepare_request, self.attempt_key = request, key
+            self.prepared_signature = signature
+            self.prepared = None
             self.handle = None
             self.cancel_requested = False
             self.cancel_future = self.cancel_deadline = None
             self.last_feedback_seq = 0
+            self.last_status_sequence = 0
+            self.execution_boot = None
             if (
                 not self.prepare_client.service_is_ready()
                 or not self.executor.server_is_ready()
@@ -268,11 +331,96 @@ class SimulationClient:
                     "retryable": False,
                     "state": 0,
                     "error_code": "",
+                    "prepared": False,
+                    "preparation_pending": True,
                 }
             )
-            self.announce("已确认草稿，正在准备模拟执行；不会调用真实 /task/execute")
+            self.announce("正在预检草稿；预检不启动动作，待你核对后确认整单执行")
         except Exception as exc:
             self.preparation_failed(str(exc), "PREPARE_FAILED")
+
+    def execute(self, draft):
+        if self.pending is not None or self.uncertain:
+            self.events.report_log("[E] [SIM] 原执行仍在处理或结果未知，不能下发新任务")
+            return
+        if self.attempt_key in self.dispatched:
+            self.events.report_log("[E] [SIM] 此版本已经下发，不重复执行")
+            return
+        try:
+            if draft.get("state") != 1:
+                raise ValueError("草稿尚未通过人工审阅，不能下发执行")
+            if (
+                self.prepared is None
+                or self.prepared_signature != self.draft_signature(draft)
+            ):
+                raise ValueError("草稿、资料或预检结果已变化，请重新预检并确认")
+            response = self.prepared
+            now = self.node.get_clock().now()
+            expiry = (
+                response.confirmation_expires_at.sec * 10**9
+                + response.confirmation_expires_at.nanosec
+            )
+            if now.nanoseconds >= expiry:
+                raise ValueError("预检确认窗口已过期，请重新预检")
+            if not self.executor.server_is_ready():
+                raise ValueError("模拟执行服务未连接，请重新预检")
+            self.goal.stamp = now.to_msg()
+            self.goal.confirmed_at = self.goal.stamp
+            self.goal.revision = response.revision
+            self.dispatched.add(self.attempt_key)
+            self.prepared = None
+            self.pending = (
+                "goal",
+                self.executor.send_goal_async(
+                    self.goal, feedback_callback=self.on_feedback
+                ),
+                time.monotonic() + self.RESPONSE_TIMEOUT,
+                self.goal.request_id,
+            )
+            self.emit_task(
+                dict(
+                    task_id=self.goal.task_id,
+                    active=True,
+                    failed=False,
+                    prepared=False,
+                    preparation_pending=False,
+                    retryable=False,
+                    execution_unknown=False,
+                    canceling=False,
+                    state=1,
+                    error_code="",
+                    message="整份任务已提交执行端，执行端自主推进，不需要逐步确认",
+                )
+            )
+        except Exception as exc:
+            if self.attempt_key not in self.dispatched:
+                self.preparation_failed(str(exc), "PREPARE_REQUIRED")
+            else:
+                self.pending = None
+                self.mark_unknown(f"执行投递结果未知：{exc}", "GOAL_RESPONSE_UNKNOWN")
+
+    def observe_liveness(self):
+        """Heartbeat and progress are independent; neither requires a UI reply."""
+        phase, future, _, request_id = self.pending
+        self.pending = (
+            phase,
+            future,
+            time.monotonic() + self.FEEDBACK_TIMEOUT,
+            request_id,
+        )
+        if self.uncertain and not self.cancel_requested:
+            self.uncertain, self.unknown_message = False, ""
+            self.emit_task(
+                dict(
+                    task_id=self.goal.task_id,
+                    active=True,
+                    failed=False,
+                    execution_unknown=False,
+                    state=1,
+                    message="执行端在线状态已恢复，继续跟踪原任务",
+                )
+            )
+            self.events.report_log("[I] [SIM] 原任务执行端在线状态已恢复")
 
     def on_feedback(self, message):
         feedback = message.feedback
@@ -324,6 +472,15 @@ class SimulationClient:
     def poll(self):
         if self.pending is None:
             self.poll_cancel(time.monotonic())
+            if self.prepared is not None:
+                expiry = self.prepared.confirmation_expires_at
+                if (
+                    self.node.get_clock().now().nanoseconds
+                    >= expiry.sec * 10**9 + expiry.nanosec
+                ):
+                    self.preparation_failed(
+                        "预检结果已过期，请重新预检后确认", "CONFIRMATION_EXPIRED"
+                    )
             return
         phase, future, deadline, request_id = self.pending
         try:
@@ -382,18 +539,37 @@ class SimulationClient:
                     or response.revision < 1
                 ):
                     raise ValueError(response.message or "模拟准备结果不匹配")
-                self.goal.stamp = self.node.get_clock().now().to_msg()
-                self.goal.confirmed_at = self.goal.stamp
-                self.goal.revision = response.revision
-                # From this point delivery may have happened, even if the call raises.
-                self.dispatched.add(self.attempt_key)
-                self.pending = (
-                    "goal",
-                    self.executor.send_goal_async(
-                        self.goal, feedback_callback=self.on_feedback
-                    ),
-                    time.monotonic() + self.RESPONSE_TIMEOUT,
-                    self.goal.request_id,
+                if normalize_candidate(
+                    candidate_payload(response.task.candidate)
+                ) != normalize_candidate(
+                    candidate_payload(self.prepare_request.task.candidate)
+                ):
+                    raise ValueError("执行端返回的任务内容变化，请重新编辑、保存并预检")
+                expiry = (
+                    response.confirmation_expires_at.sec * 10**9
+                    + response.confirmation_expires_at.nanosec
+                )
+                remaining = (expiry - self.node.get_clock().now().nanoseconds) / 10**9
+                if remaining <= 0:
+                    raise ValueError("预检结果已经过期，请重新预检")
+                self.prepared = deepcopy(response)
+                self.pending = None
+                self.emit_task(
+                    dict(
+                        task_id=self.goal.task_id,
+                        active=False,
+                        failed=False,
+                        state=0,
+                        prepared=True,
+                        preparation_pending=False,
+                        retryable=False,
+                        execution_unknown=False,
+                        canceling=False,
+                        error_code="",
+                        prepared_until=time.monotonic() + remaining,
+                        prepared_candidate=candidate_payload(response.task.candidate),
+                        message="预检通过；请核对完整草稿后点击“确认并整单执行”",
+                    )
                 )
             elif phase == "goal":
                 if not response.accepted:

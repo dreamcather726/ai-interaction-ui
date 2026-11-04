@@ -137,7 +137,13 @@ class BackendSupervisor:
             plans.append(
                 (
                     "robot_simulator",
-                    ["ros2", "launch", "robot_simulator", "simulator_all.launch.py"],
+                    [
+                        "ros2",
+                        "launch",
+                        "robot_simulator",
+                        "simulator_all.launch.py",
+                        "catalog_path:=" + catalog_path,
+                    ],
                 )
             )
         audio_file = (

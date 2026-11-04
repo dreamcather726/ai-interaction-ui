@@ -42,7 +42,7 @@ class TaskDraftPanel(QWidget):
     log_message = Signal(str)
     STATUS = {
         0: "待确认",
-        1: "已确认草稿，尚未执行",
+        1: "草稿已审阅；执行状态见任务反馈",
         2: "已取消",
         3: "已失效，需重新保存",
     }
@@ -59,6 +59,8 @@ class TaskDraftPanel(QWidget):
         self.pending = False
         self.online = False
         self.unknown = False
+        self.execution_ready = True
+        self.confirmation_gate = None
         self.sources = []
         self.session = "ui-session-" + uuid4().hex
         self.context = "ui-context-" + uuid4().hex
@@ -197,7 +199,14 @@ class TaskDraftPanel(QWidget):
             and self.saved is not None
         )
         self.buttons["confirm"].setEnabled(
-            bool(reviewable and self.saved["state"] == 0)
+            bool(
+                reviewable
+                and self.execution_ready
+                and (
+                    self.saved["state"] == 0
+                    or (self.saved["state"] == 1 and self.confirmation_gate is not None)
+                )
+            )
         )
         self.buttons["cancel"].setEnabled(
             bool(reviewable and self.saved["state"] in (0, 1))
@@ -459,7 +468,10 @@ class TaskDraftPanel(QWidget):
 
     def confirm(self):
         if self.buttons["confirm"].isEnabled():
-            self.send("confirm", deepcopy(self.saved))
+            if self.confirmation_gate is not None:
+                self.confirmation_gate()
+            else:
+                self.send("confirm", deepcopy(self.saved))
 
     def cancel(self):
         if self.buttons["cancel"].isEnabled():
@@ -503,7 +515,11 @@ class TaskDraftPanel(QWidget):
         )
         self.summary.setPlainText(
             plan_summary(empty_candidate("SEQUENCE", expanded))
-            + "\n确认只保存逐步动作的审阅结果，机器人尚未执行。"
+            + (
+                "\n预检通过后确认，将整单提交模拟执行端；无需逐步确认。"
+                if self.confirmation_gate is not None
+                else "\n确认只保存逐步动作的审阅结果，机器人尚未执行。"
+            )
         )
         self.refresh_controls()
 

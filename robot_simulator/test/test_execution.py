@@ -23,6 +23,43 @@ def advance_until(model, predicate):
 
 
 class ExecutionTests(unittest.TestCase):
+    def test_catalog_ids_replace_default_scene_and_complete_user_named_transport(self):
+        model = SimulationExecution(speed=1.0, action_seconds=0.2)
+        model.sync_catalog(["1", "2"], ["x"], initial=True)
+        self.assertEqual(set(model.stations), {"1", "2"})
+        self.assertEqual(model.objects, {"x": "1"})
+        model.start(
+            [
+                ("NAVIGATE", "1", ""),
+                ("PICK", "1", "x"),
+                ("NAVIGATE", "2", ""),
+                ("PLACE", "2", "x"),
+            ]
+        )
+        advance_until(model, lambda: model.state == "SUCCEEDED")
+        self.assertEqual(model.objects["x"], "2")
+        location = model.stations["2"]
+        model.sync_catalog(["1", "2", "3"], ["x", "y"])
+        self.assertEqual(model.stations["2"], location)
+        self.assertEqual(model.objects["x"], "2")
+        self.assertEqual(model.objects["y"], "1")
+        before = model.frame()
+        with self.assertRaises(ExecutionError):
+            model.sync_catalog(["1", "3"], ["x", "y"])
+        self.assertEqual(model.frame(), before)
+
+    def test_catalog_sync_never_changes_an_active_task_or_held_material(self):
+        model = SimulationExecution(speed=1.0, action_seconds=0.2)
+        model.sync_catalog(["1", "2"], ["x"], initial=True)
+        model.start([("NAVIGATE", "1", ""), ("PICK", "1", "x")])
+        with self.assertRaises(ExecutionError):
+            model.sync_catalog(["1", "2", "3"], ["x"])
+        advance_until(model, lambda: model.state == "SUCCEEDED")
+        self.assertEqual(model.held_object, "x")
+        with self.assertRaises(ExecutionError):
+            model.sync_catalog(["1", "2"], [])
+        self.assertEqual(model.held_object, "x")
+
     def model(self, **parameters):
         return SimulationExecution(speed=1.0, action_seconds=0.2, **parameters)
 
