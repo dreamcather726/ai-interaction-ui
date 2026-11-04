@@ -7,7 +7,7 @@ import time
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from sensor_msgs.msg import BatteryState
+from sensor_msgs.msg import BatteryState, Image
 from std_msgs.msg import String
 
 from robot_simulator.common import latched_qos, run_node
@@ -33,6 +33,11 @@ class RobotStateSimulator(Node):
         self.subscription = self.create_subscription(
             String, "/simulator/world_state", self.on_world, latched_qos()
         )
+        self.camera_subscription = self.create_subscription(
+            Image, "/camera/image_raw", self.on_camera, qos_profile_sensor_data
+        )
+        self.last_camera = None
+        self.camera_stamp = 0
         self.world = None
         self.last_world = 0.0
         self.last_error_log = 0.0
@@ -41,6 +46,17 @@ class RobotStateSimulator(Node):
         self.get_logger().info(
             "[SIM] 等待统一执行调度状态；里程计和物料状态不再独立巡航"
         )
+
+    def on_camera(self, message):
+        stamp = message.header.stamp.sec * 10**9 + message.header.stamp.nanosec
+        if (
+            stamp > self.camera_stamp
+            and message.width > 0
+            and message.height > 0
+            and message.step > 0
+            and len(message.data) >= message.step * message.height
+        ):
+            self.last_camera, self.camera_stamp = time.monotonic(), stamp
 
     def on_world(self, message):
         try:
@@ -159,7 +175,10 @@ class RobotStateSimulator(Node):
             speed=float(self.world["speed"]) if fresh else 0.0,
             world_fresh=fresh,
             chassis_ready=fresh and status.get("state") != "FAILED",
-            camera_ready=True,
+            camera_ready=(
+                self.last_camera is not None
+                and time.monotonic() - self.last_camera < 2.0
+            ),
             mode=(
                 ("统一模拟执行 · " + state_name)
                 if fresh

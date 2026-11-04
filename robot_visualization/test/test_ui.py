@@ -616,6 +616,165 @@ class WindowTests(unittest.TestCase):
         self.assertEqual(window.stage_progress.value(), 25)
         self.assertFalse(window.cancel_simulation_button.isEnabled())
 
+    def test_simulated_telemetry_expires_without_messages_and_recovers_on_new_samples(
+        self,
+    ):
+        self._prepare_home_candidate()
+        window, view = self.window, self.window.simulation_view
+        samples = {
+            "sim_camera": dict(width=2, height=2, step=6, data=bytes(range(12))),
+            "sim_odom": dict(x=-2.0, y=0.0, speed=0.4, angular=0.0),
+            "sim_battery": dict(percentage=0.82, voltage=24.2),
+            "sim_status": dict(
+                world_fresh=True, chassis_ready=True, held_object_id="box_1"
+            ),
+        }
+        with patch(
+            "robot_visualization.ui.simulation.time.monotonic", return_value=10.0
+        ):
+            for kind, sample in samples.items():
+                window.receive_record(kind, dict(sample, received_at=10.0, stamp_ns=1))
+            view.check_freshness()
+            self.assertFalse(window.camera_view.stale)
+            self.assertTrue(window.robot_page_battery.isEnabled())
+            self.assertIn("box_1", window.material_state_label.text())
+        with patch(
+            "robot_visualization.ui.simulation.time.monotonic", return_value=12.1
+        ):
+            # Replayed source stamps must not keep old sensor data alive.
+            for kind, sample in samples.items():
+                window.receive_record(kind, dict(sample, received_at=12.1, stamp_ns=1))
+            view.check_freshness()
+            self.assertTrue(window.camera_view.stale)
+            self.assertTrue(window.camera_page_view.stale)
+            self.assertIn("已过期", window.camera_page_info.text())
+            self.assertIn("已过期", window.hardware_labels["机器人状态"].text())
+            self.assertIn("未确认", window.material_state_label.text())
+            self.assertFalse(window.robot_page_battery.isEnabled())
+            self.assertEqual(window.robot_page_battery.value(), 82)
+            self.assertIn("已过期", window.robot_page_battery.format())
+        with patch(
+            "robot_visualization.ui.simulation.time.monotonic", return_value=12.2
+        ):
+            for kind, sample in samples.items():
+                window.receive_record(kind, dict(sample, received_at=12.2, stamp_ns=2))
+            view.check_freshness()
+            self.assertFalse(window.camera_view.stale)
+            self.assertTrue(window.robot_page_battery.isEnabled())
+            self.assertNotIn("已过期", window.hardware_labels["机器人状态"].text())
+            self.assertIn("box_1", window.material_state_label.text())
+
+    def test_unknown_execution_preserves_progress_and_blocks_new_home_dispatch(self):
+        parsed = self._prepare_home_candidate()
+        window = self.window
+        window.receive_record(
+            "sim_task",
+            dict(
+                task_id="original-task",
+                draft_id="original-draft",
+                draft_revision=1,
+                active=True,
+                failed=False,
+                progress=0.25,
+                step="2/4 抓取 box_1",
+                state=1,
+            ),
+        )
+        window.receive_record(
+            "sim_task",
+            dict(
+                task_id="original-task",
+                active=False,
+                execution_unknown=True,
+                failed=False,
+                state=None,
+                cancel_available=True,
+                message="执行反馈已失联，结果未知",
+                retryable=False,
+            ),
+        )
+        window.receive_record("parse", dict(parsed, request_id="new-candidate"))
+        self.assertEqual(window.stage_progress.value(), 25)
+        self.assertIn("结果未知", window.stage_badge.text())
+        self.assertIn("结果未知", window.home_draft_status.text())
+        self.assertFalse(window.home_add_candidate_button.isEnabled())
+        self.assertFalse(window.home_confirm_draft_button.isEnabled())
+        self.assertFalse(window.retry_simulation_button.isVisible())
+        self.assertTrue(window.cancel_simulation_button.isEnabled())
+        window.receive_record(
+            "sim_task",
+            dict(
+                task_id="original-task",
+                canceling=True,
+                execution_unknown=True,
+            ),
+        )
+        self.assertFalse(window.cancel_simulation_button.isEnabled())
+        window.receive_record(
+            "sim_task",
+            dict(
+                task_id="original-task",
+                active=False,
+                execution_unknown=False,
+                canceling=False,
+                failed=False,
+                state=3,
+                progress=1.0,
+                message="完成",
+            ),
+        )
+        self.assertEqual(window.stage_progress.value(), 100)
+        self.assertTrue(window.home_add_candidate_button.isEnabled())
+
+    def test_home_prepare_retry_only_uses_matching_confirmed_unedited_draft(self):
+        self._prepare_home_candidate()
+        window = self.window
+        panel = window.draft_panel
+        panel.add_candidate()
+        saved = dict(
+            draft_id="retry-draft",
+            revision=1,
+            event_seq=1,
+            boot_id="boot-one",
+            state=1,
+            session_id=panel.session,
+            input_context_id=panel.context,
+            source_request_ids=list(panel.sources),
+            candidate=panel.plan(),
+            confirmation_token="token-one",
+            summary="四步搬运",
+        )
+        panel.apply_record(saved)
+        task = dict(
+            task_id="prepare-one",
+            draft_id="retry-draft",
+            draft_revision=1,
+            active=False,
+            failed=True,
+            state=4,
+            retryable=True,
+            execution_unknown=False,
+            message="准备被拒绝，尚未发送执行 Goal",
+        )
+        window.receive_record("sim_task", task)
+        self.assertTrue(window.retry_simulation_button.isEnabled())
+        sent = []
+        window.draft_requested.connect(
+            lambda operation, body: sent.append((operation, body))
+        )
+        QTest.mouseClick(window.retry_simulation_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(sent[0][0], "simulate")
+        self.assertEqual(sent[0][1]["draft_id"], "retry-draft")
+        self.assertEqual(sent[0][1]["revision"], 1)
+        window.receive_record(
+            "sim_task", dict(task, execution_unknown=True, retryable=False)
+        )
+        self.assertFalse(window.retry_simulation_button.isVisible())
+        window.receive_record("sim_task", task)
+        panel.changed()
+        window.home_drafts.refresh()
+        self.assertFalse(window.retry_simulation_button.isEnabled())
+
     def _prepare_home_candidate(self):
         self.window.can_close = True
         self.window.close()

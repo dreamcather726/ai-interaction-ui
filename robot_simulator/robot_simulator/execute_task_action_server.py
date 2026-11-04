@@ -229,6 +229,7 @@ class ExecuteTaskSimulator(Node):
         feedback.task_id = handle.request.task_id
         feedback.dispatch_id = handle.request.dispatch_id
         feedback.task = deepcopy(snapshot)
+        feedback.message = snapshot.message
         handle.publish_feedback(feedback)
         self.snapshots.publish(snapshot)
         self.sim_snapshots.publish(snapshot)

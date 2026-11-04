@@ -238,6 +238,8 @@ class DashboardWindow(QMainWindow):
         self.tick()
 
     def tick(self):
+        if self.simulation_view is not None:
+            self.simulation_view.check_freshness()
         recording = self.availability.get("recording")
         if recording is True:
             elapsed = max(0, time.monotonic() - self.recording_since)

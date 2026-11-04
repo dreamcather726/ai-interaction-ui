@@ -19,6 +19,8 @@ class HomeDraftWorkflow(QObject):
         window.home_save_draft_button.clicked.connect(self.save)
         window.home_confirm_draft_button.clicked.connect(self.panel.confirm)
         self.panel.command_requested.connect(self.on_command)
+        if window.simulation_view is not None:
+            window.retry_simulation_button.clicked.connect(self.retry_preparation)
         self.refresh()
 
     def task(self):
@@ -68,6 +70,13 @@ class HomeDraftWorkflow(QObject):
         self.save()
 
     @Slot()
+    def retry_preparation(self):
+        self.refresh()
+        if self.window.retry_simulation_button.isEnabled():
+            self.window.retry_simulation_button.setEnabled(False)
+            self.window.draft_requested.emit("simulate", deepcopy(self.panel.saved))
+
+    @Slot()
     def save(self):
         if self.panel.buttons["save"].isEnabled() and not self.window.closing:
             self.panel.save()
@@ -80,7 +89,8 @@ class HomeDraftWorkflow(QObject):
     def refresh(self):
         window, panel, task = self.window, self.panel, self.task()
         active = task.get("active", False)
-        free = not window.closing and not panel.pending and not active
+        unknown = task.get("execution_unknown", False)
+        free = not window.closing and not panel.pending and not active and not unknown
         candidate = panel.candidate
         duplicate = bool(candidate and candidate.get("request_id") in panel.sources)
         unsaved_edits = panel.dirty and panel.table.rowCount() > 0
@@ -96,6 +106,8 @@ class HomeDraftWorkflow(QObject):
             reason = "当前候选已加入草稿，不重复添加"
         elif unsaved_edits:
             reason = "已有未保存的步骤，请先保存；不会覆盖未保存草稿"
+        elif unknown:
+            reason = "原任务结果未知，需先核实原执行；不能再次下发"
         elif active:
             reason = "请等待当前模拟任务结束"
         else:
@@ -117,7 +129,21 @@ class HomeDraftWorkflow(QObject):
             and task.get("draft_id") == saved["draft_id"]
             and task.get("draft_revision") == saved["revision"]
         )
-        if active:
+        if window.simulation_view is not None:
+            retryable = bool(task.get("retryable") and same_task)
+            window.retry_simulation_button.setVisible(retryable)
+            window.retry_simulation_button.setEnabled(
+                retryable
+                and free
+                and not panel.dirty
+                and not panel.unknown
+                and saved["state"] == 1
+            )
+        if unknown:
+            status = "执行结果未知：" + task.get("message", "请核实原任务，不重复下发")
+        elif active and task.get("canceling"):
+            status = "取消处理中，等待停止确认"
+        elif active:
             step = task.get("step", "").partition(" ")[0]
             status = "执行中，步骤 " + step if step else "正在准备模拟执行"
         elif panel.pending:

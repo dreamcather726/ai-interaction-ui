@@ -429,6 +429,11 @@ def build_progress(window):
     window.home_confirm_draft_button.setObjectName("primary")
     window.home_confirm_draft_button.setEnabled(False)
     draft_actions.addWidget(window.home_confirm_draft_button)
+    if getattr(window.config, "use_simulator", False):
+        window.retry_simulation_button = QPushButton("重试准备")
+        window.retry_simulation_button.setObjectName("small")
+        window.retry_simulation_button.setVisible(False)
+        draft_actions.addWidget(window.retry_simulation_button)
     card.body.addLayout(draft_actions)
     return card
 
