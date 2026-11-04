@@ -32,7 +32,7 @@ class TaskDraftNode(Node):
             self.get_parameter("confirmation_timeout").value,
         )
         self.publisher = self.create_publisher(TaskPlanDraft, "/ai/task_draft", 100)
-        self.services = [
+        self.draft_services = [
             self.create_service(SaveTaskDraft, "/ai/task_drafts/save", self.save),
             self.create_service(ReviewTaskDraft, "/ai/task_drafts/review", self.review),
             self.create_service(QueryTaskDraft, "/ai/task_drafts/query", self.query),
@@ -96,7 +96,8 @@ class TaskDraftNode(Node):
             )
         return now
 
-    def handle(self, request, response, operation, value):
+    def _handle_draft_request(self, request, response, operation, value):
+        """Handle business requests without shadowing rclpy.Node.handle."""
         response.request_id = request.request_id
         try:
             self.refresh_catalog()
@@ -133,7 +134,7 @@ class TaskDraftNode(Node):
         }
         value["source_request_ids"] = list(request.source_request_ids)
         value["candidate"] = candidate_payload(request.candidate)
-        return self.handle(request, response, "save", value)
+        return self._handle_draft_request(request, response, "save", value)
 
     def review(self, request, response):
         value = {
@@ -150,7 +151,7 @@ class TaskDraftNode(Node):
         operation = {request.CONFIRM: "confirm", request.CANCEL: "cancel"}.get(
             request.operation, "invalid"
         )
-        return self.handle(request, response, operation, value)
+        return self._handle_draft_request(request, response, operation, value)
 
     def query(self, request, response):
         response.request_id = request.request_id
