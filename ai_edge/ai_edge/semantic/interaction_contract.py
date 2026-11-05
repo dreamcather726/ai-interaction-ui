@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from ai_edge.common import error_codes as Codes
 from ai_edge.semantic.semantic_contract import (
     ID_FIELDS,
-    STEP_SCHEMA,
     MAX_PLAN_STEPS,
     SemanticError,
     empty_candidate,
@@ -14,15 +13,11 @@ from ai_edge.semantic.semantic_contract import (
 )
 
 QUERY_TYPES = ("ROBOT_LOCATION", "ROBOT_STATUS", "ROBOT_BATTERY")
-PARAMETERS = {
-    "type": "object",
-    "properties": {
-        key: value
-        for key, value in STEP_SCHEMA["properties"].items()
-        if key != "task_type"
-    },
-    "required": [*ID_FIELDS, "return_required"],
-    "additionalProperties": False,
+TASK_FIELDS = {
+    "NAVIGATE": ("destination_station_id",),
+    "TRANSPORT": ("object_id", "pickup_station_id", "dropoff_station_id"),
+    "PICK": ("object_id", "pickup_station_id"),
+    "PLACE": ("object_id", "dropoff_station_id"),
 }
 INTERACTION_SCHEMA = {
     "type": "object",
@@ -53,13 +48,25 @@ INTERACTION_SCHEMA = {
             "type": "array",
             "maxItems": MAX_PLAN_STEPS,
             "items": {
-                "type": "object",
-                "properties": {
-                    "task_type": STEP_SCHEMA["properties"]["task_type"],
-                    "parameters": PARAMETERS,
-                },
-                "required": ["task_type", "parameters"],
-                "additionalProperties": False,
+                "anyOf": [
+                    {
+                        "type": "object",
+                        "properties": {
+                            "task_type": {"type": "string", "enum": [kind]},
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    field: {"type": "string"} for field in fields
+                                },
+                                "required": list(fields),
+                                "additionalProperties": False,
+                            },
+                        },
+                        "required": ["task_type", "parameters"],
+                        "additionalProperties": False,
+                    }
+                    for kind, fields in TASK_FIELDS.items()
+                ]
             },
         },
     },
@@ -111,7 +118,11 @@ def validate_interaction(data, stations, objects, partial=None):
     if intent == "TASK" and (not tasks or queries):
         invalid("任务意图必须有任务，含查询时应标记为QUERY")
     if intent in ("CHAT", "CLARIFY", "UNSUPPORTED") and not reply.strip():
-        invalid("该交互意图必须包含回复")
+        if not (intent == "CLARIFY" and queries):
+            invalid("该交互意图必须包含回复")
+    if queries and not tasks and intent in ("QUERY", "CLARIFY"):
+        # 查询所缺的实时数据由服务获取，不应反问用户“电量是多少”。
+        intent, reply = "QUERY", ""
     checked = None
     if tasks:
         steps = []
@@ -124,7 +135,17 @@ def validate_interaction(data, stations, objects, partial=None):
                 or "steps" in task["parameters"]
             ):
                 invalid("任务参数结构不符合约定")
-            steps.append(dict(task["parameters"], task_type=task["task_type"]))
+            kind, parameters = task["task_type"], task["parameters"]
+            if kind not in TASK_FIELDS or not set(TASK_FIELDS[kind]).issubset(
+                parameters
+            ):
+                invalid("任务缺少对应动作的参数字段")
+            if set(parameters) - {*ID_FIELDS, "return_required"}:
+                invalid("任务包含未定义参数")
+            step = empty_candidate(kind)
+            step.pop("steps")
+            step.update(parameters)
+            steps.append(step)
         candidate = (
             dict(steps[0], steps=[])
             if len(steps) == 1

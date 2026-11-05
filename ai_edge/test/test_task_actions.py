@@ -37,6 +37,33 @@ class TaskActionTests(unittest.TestCase):
         plan = validate_action_plan(self.transport, self.stations, self.objects)
         self.assertEqual(validate_action_plan(plan, self.stations, self.objects), plan)
 
+    def test_adjacent_deliveries_do_not_repeat_navigation_to_current_pickup(self):
+        first = {key: value for key, value in self.transport.items() if key != "steps"}
+        second = dict(
+            first,
+            pickup_station_id="station_b",
+            dropoff_station_id="station_a",
+            return_required=True,
+            return_station_id="station_b",
+        )
+        plan = validate_action_plan(
+            empty_candidate("SEQUENCE", [first, second]), self.stations, self.objects
+        )
+        self.assertEqual(
+            [step["task_type"] for step in plan["steps"]],
+            [
+                "NAVIGATE",
+                "PICK",
+                "NAVIGATE",
+                "PLACE",
+                "PICK",
+                "NAVIGATE",
+                "PLACE",
+                "NAVIGATE",
+            ],
+        )
+        self.assertEqual(plan["steps"][4]["pickup_station_id"], "station_b")
+
     def test_return_is_a_separate_navigation_after_placing(self):
         self.transport.update(return_required=True, return_station_id="station_a")
         steps = action_steps(self.transport)

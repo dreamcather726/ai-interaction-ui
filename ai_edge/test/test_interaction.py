@@ -47,19 +47,26 @@ class InteractionTests(unittest.TestCase):
 
     def test_teaching_answers_and_budget(self):
         messages = build_interaction_messages("你好", ["dock_west"], [], [], None)
+        self.assertIn("你是机器人", messages[0]["content"])
+        self.assertNotIn("????", messages[0]["content"])
         for index in range(1, len(messages) - 1, 2):
             sample = json.loads(messages[index]["content"])
             output = json.loads(messages[index + 1]["content"])
+            stations, objects = set(), set()
+            for task in output["tasks"]:
+                for field, value in task["parameters"].items():
+                    if value:
+                        (objects if field == "object_id" else stations).add(value)
             validate_interaction(
                 output,
-                sample.get("allowed_station_ids", []),
-                sample.get("allowed_object_ids", []),
+                list(stations),
+                list(objects),
                 sample.get("partial_candidate"),
             )
         self.assertLess(sum(len(m["content"].encode("utf-8")) for m in messages), 13000)
-        self.assertEqual(
-            json.loads(messages[-1]["content"])["allowed_station_ids"], ["dock_west"]
-        )
+        payload = json.loads(messages[-1]["content"])
+        self.assertNotIn("allowed_station_ids", payload)
+        self.assertNotIn("configured_entities", payload)
 
     def test_backend_uses_interaction_schema_and_returns_chat(self):
         backend = OllamaBackend()
@@ -124,7 +131,7 @@ class InteractionTests(unittest.TestCase):
 
         backend.post = respond
         result = backend.interact(
-            "返回充电区",
+            "完成之后我希望能回到charger那里",
             ["warehouse", "charger"],
             [],
             [dict(role="assistant", text="请补充返回工位")],

@@ -21,14 +21,17 @@ def action_steps(candidate):
     """保留原顺序，将每次搬运展开；已拆开的动作不重复展开。"""
     source = candidate["steps"] if candidate["task_type"] == "SEQUENCE" else [candidate]
     result = []
+    location = None
     for step in source:
         kind = step["task_type"]
         if kind == "TRANSPORT":
+            # 上一段已到达本次取货点时，省去自动生成的重复导航。
+            if location != step["pickup_station_id"]:
+                result.append(
+                    action("NAVIGATE", destination_station_id=step["pickup_station_id"])
+                )
             result.extend(
                 [
-                    action(
-                        "NAVIGATE", destination_station_id=step["pickup_station_id"]
-                    ),
                     action(
                         "PICK",
                         object_id=step["object_id"],
@@ -44,12 +47,14 @@ def action_steps(candidate):
                     ),
                 ]
             )
+            location = step["dropoff_station_id"]
         elif kind == "NAVIGATE":
             result.append(
                 action(
                     "NAVIGATE", destination_station_id=step["destination_station_id"]
                 )
             )
+            location = step["destination_station_id"]
         elif kind in ("PICK", "PLACE"):
             field = "pickup_station_id" if kind == "PICK" else "dropoff_station_id"
             result.append(
@@ -65,6 +70,7 @@ def action_steps(candidate):
             result.append(
                 action("NAVIGATE", destination_station_id=step["return_station_id"])
             )
+            location = step["return_station_id"]
         if len(result) > MAX_PLAN_STEPS:
             raise SemanticError(
                 Codes.PLAN_TOO_LONG, "展开后超过256个动作，未截断，请拆分草稿"

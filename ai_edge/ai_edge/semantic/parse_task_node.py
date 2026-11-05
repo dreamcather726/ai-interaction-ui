@@ -4,7 +4,6 @@ from ai_edge.common import error_codes as Codes
 
 import time
 import json
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 import rclpy
@@ -18,7 +17,7 @@ from ai_edge.semantic.ollama_backend import OllamaBackend
 from ai_edge.semantic.semantic_contract import SemanticError
 from ai_edge.semantic.semantic_input import read_parse_goal
 from ai_edge.semantic.ros_candidates import assign_candidate
-from ai_edge.semantic.dialogue import bounded_context, dialogue_command
+from ai_edge.semantic.dialogue import dialogue_command
 from ai_edge.common.catalog import node_catalog
 from robot_interfaces.action import ParseTask
 from robot_interfaces.msg import ComponentStatus, RequestStatus
@@ -48,7 +47,6 @@ class ParseTaskNode(Node):
         self.pending = None
         self.reserved = False
         self.query_pending = None
-        self.conversations = OrderedDict()
         self.robot_query = self.create_client(QueryRobotState, "/ai/query_robot_state")
         self.receipts = self.create_publisher(RequestStatus, "/ai/request_status", 10)
         self.health_pub = self.create_publisher(
@@ -184,10 +182,8 @@ class ParseTaskNode(Node):
         try:
             self.feedback(handle, ParseTask.Feedback.QUEUED, "语义请求已受理")
             args = list(read_parse_goal(handle.request))
-            key = (handle.request.session_id, handle.request.input_context_id)
             command = dialogue_command(handle.request.text)
             if command:
-                self.conversations.pop(key, None)
                 result.outcome, result.intent = result.RESPONDED, "CHAT"
                 result.message = result.reply = (
                     "已清空待补充信息，请重新描述完整任务。"
@@ -196,8 +192,6 @@ class ParseTaskNode(Node):
                 )
                 handle.succeed()
                 return result
-            if not args[3]:
-                args[3] = self.conversations.get(key, [])
             response = Future()
             self.pending = {
                 "worker": self.worker.submit(self.backend.interact, *args),
@@ -209,13 +203,13 @@ class ParseTaskNode(Node):
             self.feedback(
                 handle,
                 ParseTask.Feedback.INFERENCING,
-                f"正在使用 {self.backend.model} 理解输入",
+                "正在理解输入",
             )
             interaction = await response
             if handle.is_cancel_requested:
                 raise SemanticError(Codes.CANCELED, "语义解析已取消")
             self.feedback(
-                handle, ParseTask.Feedback.VALIDATING, "模型输出及白名单校验已完成"
+                handle, ParseTask.Feedback.VALIDATING, "意图、实体及任务参数校验已完成"
             )
             result.intent, result.reply = interaction.intent, interaction.reply
             query_results = []
@@ -277,16 +271,6 @@ class ParseTaskNode(Node):
                 )
                 result.message = "任务候选已生成，仍需准备及用户明确确认"
                 handle.succeed()
-            self.conversations[key] = bounded_context(
-                [
-                    *self.conversations.get(key, []),
-                    {"role": "user", "text": handle.request.text},
-                    {"role": "assistant", "text": result.reply or result.message},
-                ]
-            )
-            self.conversations.move_to_end(key)
-            while len(self.conversations) > 100:
-                self.conversations.popitem(last=False)
         except Exception as exc:
             result.error_code = getattr(exc, "code", Codes.LLM_UNAVAILABLE)
             result.message = str(exc)

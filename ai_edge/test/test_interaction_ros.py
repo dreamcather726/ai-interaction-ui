@@ -170,6 +170,18 @@ class InteractionROSTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.candidate.destination_station_id, "packing_room")
 
+    def test_next_input_does_not_receive_automatic_chat_history(self):
+        contexts = []
+
+        def respond(*args):
+            contexts.append(args[3])
+            return InteractionAnswer("CHAT", "本轮回复")
+
+        self.parser.backend.interact = respond
+        self.call(self.goal("你好"))
+        self.call(self.goal("再介绍一下自己"))
+        self.assertEqual(contexts, [[], []])
+
 
 if __name__ == "__main__":
     unittest.main()

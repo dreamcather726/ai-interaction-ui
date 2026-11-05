@@ -20,6 +20,7 @@ from ai_edge.semantic.interaction_contract import (
     INTERACTION_SCHEMA,
     validate_interaction,
 )
+from ai_edge.semantic.entity_grounding import ground_interaction
 
 
 class OllamaBackend:
@@ -156,6 +157,16 @@ class OllamaBackend:
     def interact(self, text, stations, objects, context=(), partial=None):
         entities = self.entities(stations, objects)
         if partial is not None:
+            from ai_edge.semantic.explicit_commands import fill_explicit_answer
+            completed = fill_explicit_answer(text, partial, stations, objects, entities)
+            if completed is not None:
+                return completed
+        if partial is None:
+            from ai_edge.semantic.explicit_commands import compile_explicit_commands
+            compiled = compile_explicit_commands(text, stations, objects, entities)
+            if compiled is not None:
+                return compiled
+        if partial is not None:
             # 待补充任务会诱导小模型把“你好/你在哪”也当成补参。
             # 先隔离旧任务识别本轮闲聊、只读查询，真正补参时才带入候选。
             current = build_interaction_messages(
@@ -166,7 +177,13 @@ class OllamaBackend:
                 "CHAT",
                 "QUERY",
             ):
-                routed = validate_interaction(routed_output, stations, objects)
+                routed = validate_interaction(
+                    ground_interaction(
+                        routed_output, text, stations, objects, entities
+                    ),
+                    stations,
+                    objects,
+                )
                 if routed.task_answer is None:
                     return routed
         messages = build_interaction_messages(
@@ -177,6 +194,21 @@ class OllamaBackend:
             partial,
             entities,
         )
-        return validate_interaction(
-            self.generate(messages, INTERACTION_SCHEMA), stations, objects, partial
+        output = ground_interaction(
+            self.generate(messages, INTERACTION_SCHEMA),
+            text,
+            stations,
+            objects,
+            entities,
+            partial,
         )
+        answer = validate_interaction(output, stations, objects, partial)
+        if (
+            answer.task_answer
+            and not answer.task_answer.missing_fields
+            and answer.intent != "CLARIFY"
+        ):
+            from ai_edge.task_drafts.actions import validate_action_plan
+
+            validate_action_plan(answer.task_answer.candidate, stations, objects)
+        return answer

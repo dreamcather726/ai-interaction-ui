@@ -27,9 +27,7 @@ from ai_edge.common.catalog import catalog_ids, seed_catalog
 class DashboardWindow(QMainWindow):
     """Qt 展示与交互层；模型加载、ROS 通信和进程管理由后台负责。"""
 
-    LAYOUT_DESCRIPTION = (
-        "三栏监控工作台：顶部栏、左侧导航、首页双列内容、右侧状态栏；无主窗口滚动区"
-    )
+    LAYOUT_DESCRIPTION = "三栏监控工作台：文本指令输入、本轮对话与查询、任务候选；保留当前页签；无主窗口滚动区"
 
     start_requested = Signal()
     stop_requested = Signal()
@@ -55,6 +53,8 @@ class DashboardWindow(QMainWindow):
         self.can_close = False
         self.closing = False
         self.text_pending = None
+        self.current_interaction_id = None
+        self.displayed_interaction_id = None
         self.setWindowTitle("机器人可视化与监控平台 · 三栏监控版")
         # 普通窗口大小为1440×900；应用入口默认全屏，F11可恢复普通窗口。
         available = self.screen().availableGeometry()
@@ -277,33 +277,34 @@ class DashboardWindow(QMainWindow):
         self.text_input.clear()
         self.chat_input.clear()
         self.conversation_status.setText("正在等待助手回复……")
-        self.command_pages.setCurrentIndex(self.conversation_page_index)
         self.refresh_controls()
         self.text_requested.emit(request_id, text)
 
     def refresh_conversation(self):
-        turns = []
-        for request_id, record in self.store.records.items():
-            text = record.get("asr", {}).get("text", "")
-            parsed = record.get("parse", {})
-            reply = (
-                parsed.get("reply")
-                or parsed.get("clarification_question")
-                or parsed.get("message", "")
+        """只展示本轮输入和答复，不拼接旧对话，也不强制切换页签。"""
+        request_id = self.current_interaction_id
+        record = self.store.records.get(request_id, {})
+        text = record.get("asr", {}).get("text", "")
+        parsed = record.get("parse", {})
+        reply = (
+            parsed.get("reply")
+            or parsed.get("clarification_question")
+            or parsed.get("message", "")
+        )
+        if not reply and record.get("state", {}).get("stage") in (7, 9):
+            reply = record["state"].get("message", "")
+        content = "\n\n".join(
+            filter(
+                None, (f"你：{text}" if text else "", f"助手：{reply}" if reply else "")
             )
-            if not reply and record.get("state", {}).get("stage") in (7, 9):
-                reply = record["state"].get("message", "")
-            if text:
-                turns.append(f"你：{text}")
-            if reply:
-                turns.append(f"助手：{reply}")
-            if text or reply:
-                turns.append("")
-        self.conversation_text.setPlainText("\n".join(turns).strip())
-        QTimer.singleShot(0, self.show_latest_reply)
-
-    def show_latest_reply(self):
-        self.conversation_text.pager.go(self.conversation_text.pager.pages - 1)
+        )
+        self.conversation_text.setPlainText(
+            content, preserve_page=request_id == self.displayed_interaction_id
+        )
+        self.displayed_interaction_id = request_id
+        self.input_reply.setText(
+            f"助手：{reply}" if reply else "助手回复：等待本次处理结果"
+        )
 
     @Slot(str, dict)
     def receive_record(self, kind, value):
@@ -313,29 +314,21 @@ class DashboardWindow(QMainWindow):
                 self.home_drafts.refresh()
             return
         request_id = value.get("request_id")
-        previous_reply = (
-            self.store.records.get(request_id, {}).get("parse", {}).get("reply")
-        )
         is_new = request_id not in self.store.records
         if not self.store.apply(kind, value):
             return
+        if is_new:
+            self.current_interaction_id = request_id
         if kind == "parse":
             if request_id == self.text_pending:
                 self.text_pending = None
                 self.refresh_controls()
-            if value.get("reply"):
+            if value.get("reply") and request_id == self.current_interaction_id:
                 self.conversation_status.setText(
                     "查询未能获得有效数据"
                     if value.get("error_code") and value.get("intent") == "QUERY"
                     else "助手已回复"
                 )
-            if value.get("reply") != previous_reply and value.get("intent") in (
-                "CHAT",
-                "QUERY",
-                "CLARIFY",
-                "UNSUPPORTED",
-            ):
-                self.command_pages.setCurrentIndex(self.conversation_page_index)
         self.refresh_conversation()
         if self.selected_request is None or is_new:
             self.selected_request = request_id
@@ -425,13 +418,10 @@ class DashboardWindow(QMainWindow):
             self.dialogue_hint.setText(
                 f"{question}\n请再次录音回答；更换任务请先说“重新开始”。"
             )
-        elif parsed.get("outcome") == 0 and parsed.get("success"):
-            self.dialogue_hint.setText(
-                "候选信息已完整，可加入草稿；在“任务草稿”页签核对完整动作后确认。"
-            )
         else:
             self.dialogue_hint.clear()
         self.dialogue_hint.setVisible(bool(self.dialogue_hint.text()))
+        self.home_draft_hint.setVisible(not bool(self.dialogue_hint.text()))
         messages = [state.get("message", ""), parsed.get("message", "")]
         if parsed.get("missing_fields"):
             messages.append("待补充：" + "、".join(parsed["missing_fields"]))

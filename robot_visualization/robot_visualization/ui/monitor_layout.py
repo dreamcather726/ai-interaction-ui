@@ -302,6 +302,10 @@ def build_commands(window):
     source_body = QVBoxLayout(source_page)
     source_body.setContentsMargins(0, 0, 0, 0)
     window.input_tabs = PageTabs()
+    window.input_tabs.setMaximumHeight(150)
+    window.input_tabs.currentChanged.connect(
+        lambda index: window.input_tabs.setMaximumHeight(150 if index == 0 else 105)
+    )
     voice = QWidget()
     layout = QVBoxLayout(voice)
     layout.setContentsMargins(0, 2, 0, 0)
@@ -331,32 +335,36 @@ def build_commands(window):
     text_page = QWidget()
     text_body = QVBoxLayout(text_page)
     text_body.setContentsMargins(0, 2, 0, 0)
-    text_body.addWidget(
-        label("输入任务、问候或位置问题；回复显示在“对话与查询”。", "muted", True)
-    )
+    text_body.addWidget(label("输入文本后点击发送，下方查看任务候选。", "muted", True))
     window.text_input = QLineEdit()
     window.text_input.setMaxLength(4096)
     window.text_input.setPlaceholderText("例如：你好 / 你现在在哪里 / 去已配置的工位")
-    text_body.addWidget(window.text_input)
-    window.text_send_button = QPushButton("发送文字")
+    text_row = QHBoxLayout()
+    text_row.addWidget(window.text_input, 1)
+    window.text_send_button = QPushButton("发送文本指令")
     window.text_send_button.setObjectName("primary")
+    window.text_send_button.setStyleSheet("padding: 5px 10px;")
     window.text_send_button.clicked.connect(
         lambda: window.send_text(window.text_input.text())
     )
     window.text_input.returnPressed.connect(
         lambda: window.send_text(window.text_input.text())
     )
-    text_body.addWidget(window.text_send_button)
-    window.input_tabs.addTab(text_page, "文字输入")
+    text_row.addWidget(window.text_send_button)
+    text_body.addLayout(text_row)
+    window.input_tabs.addTab(text_page, "文本指令")
     source_body.addWidget(window.input_tabs)
+    window.input_reply = ElidedLabel("助手回复：等待本次输入")
+    source_body.addWidget(window.input_reply)
     source_body.addWidget(label("解析结果（结构化指令）", "section"))
     parsed = QHBoxLayout()
     parsed.setSpacing(6)
     window.asr_text, window.candidate_text = PagedText(), PagedText()
     for title, view, stretch in (
-        ("ASR 识别文字", window.asr_text, 2),
+        ("输入文字 / ASR识别", window.asr_text, 2),
         ("任务候选 / 动作预览", window.candidate_text, 3),
     ):
+        view.setMinimumHeight(100)
         column = QVBoxLayout()
         column.setSpacing(4)
         column.addWidget(label(title, "muted"))
@@ -399,7 +407,7 @@ def build_commands(window):
     chat_body.setContentsMargins(0, 2, 0, 0)
     chat_body.addWidget(
         label(
-            "语音和文字回复都显示在这里；位置、状态和电量通过实际请求查询。",
+            "这里只显示本次输入和回复；查询会发送实际请求，发送时保留当前页签。",
             "muted",
             True,
         )

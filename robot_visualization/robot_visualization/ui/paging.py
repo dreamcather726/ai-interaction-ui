@@ -149,13 +149,14 @@ class PagedText(QWidget):
         self._timer.timeout.connect(self._reflow)
         self._timer.start(0)
 
-    def setPlainText(self, text):
+    def setPlainText(self, text, *, preserve_page=False):
         text = str(text)
         if text == self._text:
             return
         self._text = text
         self._follow_tail = False
-        self.pager.set_pages(1, 0)
+        if not preserve_page:
+            self.pager.set_pages(1, 0)
         self._timer.start(0)
 
     def setText(self, text):
