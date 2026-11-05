@@ -16,6 +16,8 @@ ROS 2 Humble AI 交互项目。程序与模型部署在 PC 的 Linux 虚拟机�
 
 详见[接口协议](docs/接口协议.md)。仓库使用英文名称 `ai-interaction-ui`，中文项目名称为“ai交互界面”。
 
+配置覆盖顺序、路径规则、后台参数生效范围和验证命令见[部署配置](docs/部署配置.md)。
+
 ### 一键启动图形工作台
 
 先构建所有包、加载工作空间，再安装一次 PySide6：
@@ -28,12 +30,26 @@ source install/setup.bash
 /usr/bin/python3 -m pip install --user -r src/robot_visualization/requirements.txt
 ```
 
-以后加载 ROS 和工作空间环境后，一个命令启动界面及全部现有语音功能：
+以后从工作空间根目录加载 ROS 和环境，按部署模式启动：
 
 ```bash
-ros2 run --prefix /usr/bin/python3 robot_visualization dashboard --ros-args \
-  -p asr_python:=/usr/bin/python3
+# 默认 SIM 域 71；实机 launch 默认域 72。
+ros2 launch robot_visualization dashboard_sim.launch.py
+# 实机：ros2 launch robot_visualization dashboard_real.launch.py
 ```
+
+部署参数集中在 `robot_visualization/config/`：`common.yaml` 保存模型、ASR、超时、路径和机器人接口；`simulation.yaml`／`real.yaml` 只覆盖模式差异。将 `local.example.yaml` 复制为工作空间根目录的 `local.yaml`，填写本机路径或模型后：
+
+```bash
+ros2 launch robot_visualization dashboard_sim.launch.py \
+  local_params_file:=$PWD/local.yaml
+# 临时覆盖模型（需先安装对应 Ollama 模型）：
+ros2 launch robot_visualization dashboard_sim.launch.py model:=qwen3.5:4b
+```
+
+优先级：代码默认值 < 公共配置 < 部署配置 < 本机配置 < 显式启动参数。可用 `common_params_file:=...`、`params_file:=...` 指定外部配置；外部 YAML 修改后重启生效，包内配置修改后需重新构建。`data_root` 默认是启动工作目录，音频、资料库、草稿库和下发记录的相对路径都以它为基准；`model_path` 的相对路径也按它解析。`asr_python` 默认自动检测现有虚拟环境，否则使用当前解释器。直接 `ros2 run ... dashboard --ros-args ...` 仍可用于调试，但不会自动加载这些 YAML。
+
+工位和物料继续在界面维护并存入 `catalog.sqlite3`，不在 YAML 重复配置。启动日志输出配置来源与生效参数；参数拼写、范围及超时关系不合法时会报错。本机 `local.yaml` 已忽略提交，也不会被打包安装。`ROS_DOMAIN_ID` 由 `domain_id:=...` 在节点启动前设置。
 
 GUI 依赖固定为 PySide6 6.8.3，直接安装到系统 Python 的用户目录，无需虚拟环境。已安装 6.12.0 且出现 `none_dealloc` 崩溃时，先按[工作台使用说明](docs/前端工作台_使用说明.md#pyside6-依赖替换与崩溃排查)替换依赖。
 

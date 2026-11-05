@@ -11,6 +11,7 @@ from ai_edge.semantic.ros_candidates import assign_candidate
 from ai_edge.semantic.semantic_contract import candidate_payload
 from ai_edge.semantic.dialogue import dialogue_command
 from ai_edge.audio.audio_result_validation import validate_parse_result
+from ai_edge.common.inference_config import PIPELINE_DEFAULTS
 
 
 class ConversationClient:
@@ -114,7 +115,12 @@ class ConversationClient:
                     handle=handle,
                     future=handle.get_result_async(),
                     stage="result",
-                    deadline=time.monotonic() + 300.0,
+                    deadline=time.monotonic()
+                    + getattr(
+                        self.node.config,
+                        "parse_timeout",
+                        PIPELINE_DEFAULTS["parse_timeout"],
+                    ),
                 )
                 return
             wrapped = job["future"].result()
@@ -146,7 +152,11 @@ class ConversationClient:
                     dict(role="user", text=job["text"]),
                     dict(role="assistant", text=result.clarification_question),
                 ]
-                self.partial_until = time.monotonic() + 300.0
+                self.partial_until = time.monotonic() + getattr(
+                    self.node.config,
+                    "clarification_timeout",
+                    PIPELINE_DEFAULTS["clarification_timeout"],
+                )
             elif result.outcome == result.READY:
                 self.partial = None
             self.events.record.emit("parse", self.payload(result))

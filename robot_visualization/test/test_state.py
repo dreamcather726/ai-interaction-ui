@@ -189,6 +189,7 @@ class SupervisorRulesTests(unittest.TestCase):
                 "simulator_all.launch.py",
                 "catalog_path:="
                 + str(config.audio_root.parent / "task_data/catalog.sqlite3"),
+                "use_sim_time:=false",
             ],
         )
         for name in (

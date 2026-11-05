@@ -9,6 +9,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 def generate_launch_description():
     arguments = [
+        DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("camera_width", default_value="640"),
         DeclareLaunchArgument("camera_height", default_value="480"),
         DeclareLaunchArgument("camera_fps", default_value="10.0"),
@@ -84,7 +85,14 @@ def generate_launch_description():
                 name=node_name,
                 namespace="/camera" if executable == "camera_simulator_node" else "/",
                 output="screen",
-                parameters=[parameters],
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(
+                            LaunchConfiguration("use_sim_time"), value_type=bool
+                        )
+                    },
+                    parameters,
+                ],
             )
         )
     return LaunchDescription(arguments + nodes)

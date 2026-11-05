@@ -15,6 +15,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlsplit
+from ai_edge.common.inference_config import (
+    LLM_DEFAULTS,
+    ASR_DEFAULTS,
+    PIPELINE_DEFAULTS,
+)
 
 from robot_visualization.runtime.console import (
     console_log,
@@ -23,6 +28,7 @@ from robot_visualization.runtime.console import (
     is_exception_line,
     log_level,
 )
+from robot_visualization.runtime.diagnostics import loaded_runtime
 
 
 def ros_command(package, executable, parameters=None, python=""):
@@ -51,15 +57,39 @@ class BackendSupervisor:
 
     def plans(self):
         c = self.config
+
+        def managed_command(package, executable, parameters=None, python=""):
+            return ros_command(
+                package,
+                executable,
+                dict(parameters or {}, use_sim_time=getattr(c, "use_sim_time", False)),
+                python,
+            )
+
         catalog_path = str(
             getattr(
                 c, "catalog_path", c.audio_root.parent / "task_data/catalog.sqlite3"
             )
         )
+        pipeline_params = {
+            "audio_root": str(c.audio_root),
+            "enable_semantic": True,
+            "catalog_path": catalog_path,
+            **{
+                name: getattr(c, name, default)
+                for name, default in PIPELINE_DEFAULTS.items()
+            },
+        }
+        for name, values in (
+            ("allowed_station_ids", c.stations),
+            ("allowed_object_ids", c.objects),
+        ):
+            if values:
+                pipeline_params[name] = values
         plans = [
             (
                 "audio_receiver_node",
-                ros_command(
+                managed_command(
                     "ai_interface",
                     "audio_receiver_node",
                     {"output_dir": str(c.audio_root)},
@@ -67,66 +97,48 @@ class BackendSupervisor:
             ),
             (
                 "parse_task_node",
-                ros_command(
+                managed_command(
                     "ai_edge",
                     "parse_task_node",
                     {
-                        "model": c.model,
-                        "ollama_url": c.ollama_url,
+                        **{
+                            name: getattr(c, name, default)
+                            for name, default in LLM_DEFAULTS.items()
+                        },
                         "catalog_path": catalog_path,
                     },
                 ),
             ),
             (
                 "asr_node",
-                ros_command(
+                managed_command(
                     "ai_edge",
                     "asr_node",
                     {
                         "audio_root": str(c.audio_root),
                         "model_path": c.model_path,
-                        "device": "cpu",
+                        **{
+                            name.removeprefix("asr_"): getattr(c, name, default)
+                            for name, default in ASR_DEFAULTS.items()
+                        },
                     },
                     c.asr_python,
                 ),
             ),
             (
                 "audio_processing_node",
-                ros_command(
+                managed_command(
                     "ai_edge",
                     "audio_processing_node",
-                    {
-                        "audio_root": str(c.audio_root),
-                        "enable_semantic": True,
-                        "parse_timeout": 300.0,
-                        "allowed_station_ids": c.stations,
-                        "allowed_object_ids": c.objects,
-                        "catalog_path": catalog_path,
-                    },
+                    pipeline_params,
                 ),
             ),
         ]
-        # 未配置的空列表不能被 ROS 自动推断为字符串数组，因此省略空白名单覆盖。
-        if not c.stations or not c.objects:
-            params = {
-                "audio_root": str(c.audio_root),
-                "enable_semantic": True,
-                "parse_timeout": 300.0,
-                "catalog_path": catalog_path,
-            }
-            if c.stations:
-                params["allowed_station_ids"] = c.stations
-            if c.objects:
-                params["allowed_object_ids"] = c.objects
-            plans[-1] = (
-                "audio_processing_node",
-                ros_command("ai_edge", "audio_processing_node", params),
-            )
         robot = getattr(c, "robot", None)
         plans.append(
             (
                 "robot_state_query_node",
-                ros_command(
+                managed_command(
                     "ai_edge",
                     "robot_state_query_node",
                     {
@@ -141,7 +153,13 @@ class BackendSupervisor:
             )
         )
         draft_params = {
-            "database_path": str(c.audio_root.parent / "task_data/task_drafts.sqlite3"),
+            "database_path": str(
+                getattr(
+                    c,
+                    "draft_database_path",
+                    c.audio_root.parent / "task_data/task_drafts.sqlite3",
+                )
+            ),
             "catalog_path": catalog_path,
         }
         if c.stations:
@@ -149,7 +167,10 @@ class BackendSupervisor:
         if c.objects:
             draft_params["allowed_object_ids"] = c.objects
         plans.append(
-            ("task_draft_node", ros_command("ai_edge", "task_draft_node", draft_params))
+            (
+                "task_draft_node",
+                managed_command("ai_edge", "task_draft_node", draft_params),
+            )
         )
         if getattr(c, "use_simulator", False):
             plans.append(
@@ -161,6 +182,8 @@ class BackendSupervisor:
                         "robot_simulator",
                         "simulator_all.launch.py",
                         "catalog_path:=" + catalog_path,
+                        "use_sim_time:="
+                        + str(getattr(c, "use_sim_time", False)).lower(),
                     ],
                 )
             )
@@ -173,7 +196,7 @@ class BackendSupervisor:
             plans.append(
                 (
                     "fake_microphone_sender",
-                    ros_command(
+                    managed_command(
                         "robot_simulator",
                         "fake_microphone_sender",
                         {
@@ -187,7 +210,7 @@ class BackendSupervisor:
             plans.append(
                 (
                     "microphone_sender_node",
-                    ros_command(
+                    managed_command(
                         "ai_interface",
                         "microphone_sender_node",
                         {
@@ -221,11 +244,26 @@ class BackendSupervisor:
                 self.log_file.flush()
 
     def start(self, existing):
+        folder = Path.home() / ".local/state/ai_interaction"
+        folder.mkdir(parents=True, exist_ok=True)
+        self.log_file = (
+            folder / f"dashboard_{datetime.now():%Y%m%d_%H%M%S_%f}_{os.getpid()}.log"
+        ).open("a", encoding="utf-8")
+        self.emit(f"本次后台日志文件：{self.log_file.name}", "INFO")
+        self.emit(
+            "运行环境：" + json.dumps(loaded_runtime(), ensure_ascii=False), "INFO"
+        )
+        if hasattr(self.config, "effective_settings"):
+            self.emit(
+                "工作台生效配置（后台参数仅传给本次新启动节点）："
+                + json.dumps(
+                    self.config.effective_settings(), ensure_ascii=False, default=str
+                ),
+                "INFO",
+            )
         if not self.config.start_backend:
             self.emit("仅连接模式：不启动或接管已有后端进程", "INFO")
             return
-        folder = Path.home() / ".local/state/ai_interaction"
-        folder.mkdir(parents=True, exist_ok=True)
         if sys.platform.startswith("linux"):
             import fcntl
 
@@ -239,11 +277,7 @@ class BackendSupervisor:
                 self.lock_file.close()
                 self.lock_file = None
                 return
-        self.log_file = (
-            folder / f"dashboard_{datetime.now():%Y%m%d_%H%M%S}_{os.getpid()}.log"
-        ).open("a", encoding="utf-8")
         self.config.audio_root.mkdir(parents=True, exist_ok=True)
-        self.emit(f"本次后台日志文件：{self.log_file.name}", "DEBUG")
         self.emit(f"音频保存目录：{self.config.audio_root}", "DEBUG")
         self.emit(
             f"基础资料库：{getattr(self.config, 'catalog_path', 'task_data/catalog.sqlite3')}；外部节点须配置同一绝对路径",
@@ -301,8 +335,9 @@ class BackendSupervisor:
             if name in existing:
                 self.external_nodes.add(name)
                 self.emit(
-                    f"沿用外部节点：{name}，继续使用原参数；关闭本窗口时保留该进程",
-                    "INFO",
+                    f"沿用外部节点：{name}；本次配置未应用到该节点，参数一致性未验证。"
+                    "如需应用新配置，请手动重启该节点；关闭本窗口时保留该进程",
+                    "WARNING",
                 )
             else:
                 self.spawn(name, command)

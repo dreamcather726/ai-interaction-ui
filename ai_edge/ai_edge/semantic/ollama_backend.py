@@ -6,7 +6,6 @@ import json
 import socket
 from ai_edge.common.catalog import catalog_ids
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 from ai_edge.semantic.semantic_contract import (
@@ -21,6 +20,7 @@ from ai_edge.semantic.interaction_contract import (
     validate_interaction,
 )
 from ai_edge.semantic.entity_grounding import ground_interaction
+from ai_edge.common.inference_config import LLM_DEFAULTS, validate_llm
 
 
 class OllamaBackend:
@@ -28,22 +28,33 @@ class OllamaBackend:
 
     def __init__(
         self,
-        base_url="http://127.0.0.1:11434",
-        model="qwen3.5:2b",
-        timeout=290.0,
+        base_url=LLM_DEFAULTS["ollama_url"],
+        model=LLM_DEFAULTS["model"],
+        timeout=LLM_DEFAULTS["request_timeout"],
         catalog=None,
+        *,
+        temperature=LLM_DEFAULTS["temperature"],
+        num_ctx=LLM_DEFAULTS["num_ctx"],
+        num_predict=LLM_DEFAULTS["num_predict"],
+        keep_alive=LLM_DEFAULTS["keep_alive"],
     ):
-        parts = urlsplit(base_url)
-        if (
-            parts.scheme not in ("http", "https")
-            or not parts.netloc
-            or parts.query
-            or parts.fragment
-        ):
-            raise ValueError("ollama_url 必须为有效的 HTTP/HTTPS 服务地址")
-        if not model.strip() or not 0 < timeout <= 290:
-            raise ValueError("模型名不能为空，request_timeout 必须在 (0,290] 秒内")
+        validate_llm(
+            dict(
+                LLM_DEFAULTS,
+                ollama_url=base_url,
+                model=model,
+                request_timeout=timeout,
+                temperature=temperature,
+                num_ctx=num_ctx,
+                num_predict=num_predict,
+                keep_alive=keep_alive,
+            )
+        )
         self.base_url, self.model, self.timeout = base_url.rstrip("/"), model, timeout
+        self.options = dict(
+            temperature=temperature, num_ctx=num_ctx, num_predict=num_predict
+        )
+        self.keep_alive = keep_alive
         self.catalog = catalog
         # 本地模型调用不经过系统代理，避免 WSL 的代理配置干扰回环连接。
         self.opener = build_opener(ProxyHandler({}))
@@ -122,8 +133,8 @@ class OllamaBackend:
                 "stream": False,
                 "think": False,
                 "format": schema,
-                "keep_alive": "5m",
-                "options": {"temperature": 0, "num_predict": 16000, "num_ctx": 32768},
+                "keep_alive": self.keep_alive,
+                "options": self.options,
             },
         )
         try:
@@ -158,11 +169,13 @@ class OllamaBackend:
         entities = self.entities(stations, objects)
         if partial is not None:
             from ai_edge.semantic.explicit_commands import fill_explicit_answer
+
             completed = fill_explicit_answer(text, partial, stations, objects, entities)
             if completed is not None:
                 return completed
         if partial is None:
             from ai_edge.semantic.explicit_commands import compile_explicit_commands
+
             compiled = compile_explicit_commands(text, stations, objects, entities)
             if compiled is not None:
                 return compiled

@@ -1,0 +1,10 @@
+# Copy outside the installed package, e.g. ~/ai-interaction-ui/local.yaml.
+# ros2 launch robot_visualization dashboard_sim.launch.py local_params_file:=/absolute/path/local.yaml
+# Uncomment machine-specific overrides. Never put passwords or tokens here.
+/**:
+  ros__parameters:
+    data_root: .
+    # model: qwen3.5:4b  # Install the desired Ollama model separately first.
+    # ollama_url: http://127.0.0.1:11434
+    # model_path: /absolute/path/to/SenseVoiceSmall
+    # asr_python: /absolute/path/to/python

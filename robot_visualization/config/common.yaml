@@ -1,0 +1,49 @@
+# ROS parameters forwarded by the dashboard to its managed backend nodes.
+# Precedence: code defaults < common < simulation/real < local < launch overrides.
+# Relative data paths use data_root (itself relative to launch cwd).
+# Station/material names and aliases belong to catalog.sqlite3.
+/**:
+  ros__parameters:
+    data_root: .
+    audio_root: received_audio
+    catalog_path: task_data/catalog.sqlite3
+    draft_database_path: task_data/task_drafts.sqlite3
+    # model_path/asr_python are auto-detected unless overridden locally.
+    model: qwen3.5:2b
+    ollama_url: http://127.0.0.1:11434
+    temperature: 0.0
+    num_ctx: 32768
+    num_predict: 16000
+    keep_alive: 5m
+    request_timeout: 290.0
+    robot_query_timeout: 3.0
+    # Allow transport time and up to three read-only queries after inference.
+    parse_timeout: 300.0
+    clarification_timeout: 300.0
+    asr_device: cpu
+    asr_language: zh
+    asr_ncpu: 4
+    asr_recognition_timeout: 180.0
+    asr_timeout: 185.0
+    device: "@DEFAULT_SOURCE@"
+    max_recording_seconds: 120.0
+    start_backend: true
+    start_microphone: true
+    use_sim_time: false
+    robot_prepare_service: /task/prepare
+    robot_execute_action: /task/execute
+    robot_query_service: /task/query
+    robot_cancel_service: /task/cancel
+    robot_snapshot_topic: /task/snapshot
+    robot_status_topic: /robot/status
+    robot_heartbeat_topic: /robot/heartbeat
+    robot_material_topic: /robot/material_state
+    robot_executor_node: /execute_task_action_server
+    robot_map_topic: /map
+    robot_camera_topic: /camera/image_raw
+    robot_odom_topic: /odom
+    robot_battery_topic: /battery_state
+    robot_response_timeout: 5.0
+    robot_heartbeat_timeout: 5.0
+    robot_cancel_timeout: 5.0
+    robot_telemetry_timeout: 2.0

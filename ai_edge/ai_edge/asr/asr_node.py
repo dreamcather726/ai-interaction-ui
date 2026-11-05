@@ -1,6 +1,7 @@
 """提供文件语音识别服务；模型推理在工作线程执行，不阻塞 ROS 回调。"""
 
 from ai_edge.common import error_codes as Codes
+from ai_edge.common.inference_config import ASR_DEFAULTS
 
 import sys
 import time
@@ -31,10 +32,10 @@ class ASRNode(Node):
         for name, value in (
             ("audio_root", "received_audio"),
             ("model_path", str(default_model_path())),
-            ("device", "cpu"),
-            ("language", "zh"),
-            ("ncpu", 4),
-            ("recognition_timeout", 180.0),
+            *(
+                (name.removeprefix("asr_"), value)
+                for name, value in ASR_DEFAULTS.items()
+            ),
         ):
             self.declare_parameter(name, value)
         self.audio_root = (

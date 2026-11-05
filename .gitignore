@@ -10,3 +10,9 @@
 /task_data/
 __pycache__/
 *.py[cod]
+
+# Machine-local deployment overrides.
+local.yaml
+local.yml
+.ruff_cache/
+.pytest_cache/

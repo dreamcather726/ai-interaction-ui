@@ -4,6 +4,7 @@ from ai_edge.common import error_codes as Codes
 
 import time
 from ai_edge.common.catalog import catalog_ids, node_catalog
+from ai_edge.common.inference_config import PIPELINE_DEFAULTS
 from types import SimpleNamespace
 
 from action_msgs.msg import GoalStatus
@@ -46,9 +47,8 @@ class AudioPipeline:
 
         # 声明并检查节点参数。
         node.declare_parameter("enable_semantic", True)
-        node.declare_parameter("asr_timeout", 185.0)
-        node.declare_parameter("parse_timeout", 300.0)
-        node.declare_parameter("clarification_timeout", 300.0)
+        for name, value in PIPELINE_DEFAULTS.items():
+            node.declare_parameter(name, value)
         node.declare_parameter("allowed_station_ids", Parameter.Type.STRING_ARRAY)
         node.declare_parameter("allowed_object_ids", Parameter.Type.STRING_ARRAY)
         self.catalog = node_catalog(node)

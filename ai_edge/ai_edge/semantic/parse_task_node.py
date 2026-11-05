@@ -19,6 +19,7 @@ from ai_edge.semantic.semantic_input import read_parse_goal
 from ai_edge.semantic.ros_candidates import assign_candidate
 from ai_edge.semantic.dialogue import dialogue_command
 from ai_edge.common.catalog import node_catalog
+from ai_edge.common.inference_config import LLM_DEFAULTS, validate_llm
 from robot_interfaces.action import ParseTask
 from robot_interfaces.msg import ComponentStatus, RequestStatus
 from robot_interfaces.srv import QueryRobotState
@@ -29,19 +30,22 @@ class ParseTaskNode(Node):
 
     def __init__(self):
         super().__init__("parse_task_node")
-        for name, value in (
-            ("ollama_url", "http://127.0.0.1:11434"),
-            ("model", "qwen3.5:2b"),
-            ("request_timeout", 290.0),
-        ):
+        for name, value in LLM_DEFAULTS.items():
             self.declare_parameter(name, value)
+        parameters = {name: self.get_parameter(name).value for name in LLM_DEFAULTS}
+        validate_llm(parameters)
         self.timeout = self.get_parameter("request_timeout").value
+        self.robot_query_timeout = parameters["robot_query_timeout"]
         self.catalog = node_catalog(self)
         self.backend = OllamaBackend(
             self.get_parameter("ollama_url").value,
             self.get_parameter("model").value,
             self.timeout,
             catalog=self.catalog,
+            **{
+                name: parameters[name]
+                for name in ("temperature", "num_ctx", "num_predict", "keep_alive")
+            },
         )
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ollama")
         self.pending = None
@@ -306,7 +310,7 @@ class ParseTaskNode(Node):
             future=self.robot_query.call_async(request),
             response=response,
             handle=handle,
-            deadline=time.monotonic() + 3.0,
+            deadline=time.monotonic() + self.robot_query_timeout,
         )
         try:
             result = await response
