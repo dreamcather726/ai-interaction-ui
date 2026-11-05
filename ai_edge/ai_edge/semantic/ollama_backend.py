@@ -154,13 +154,28 @@ class OllamaBackend:
         return validate_candidate(merged, stations, objects)
 
     def interact(self, text, stations, objects, context=(), partial=None):
+        entities = self.entities(stations, objects)
+        if partial is not None:
+            # 待补充任务会诱导小模型把“你好/你在哪”也当成补参。
+            # 先隔离旧任务识别本轮闲聊、只读查询，真正补参时才带入候选。
+            current = build_interaction_messages(
+                text, stations, objects, [], None, entities
+            )
+            routed_output = self.generate(current, INTERACTION_SCHEMA)
+            if isinstance(routed_output, dict) and routed_output.get("intent") in (
+                "CHAT",
+                "QUERY",
+            ):
+                routed = validate_interaction(routed_output, stations, objects)
+                if routed.task_answer is None:
+                    return routed
         messages = build_interaction_messages(
             text,
             stations,
             objects,
             list(context),
             partial,
-            self.entities(stations, objects),
+            entities,
         )
         return validate_interaction(
             self.generate(messages, INTERACTION_SCHEMA), stations, objects, partial

@@ -75,6 +75,68 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(result.intent, "CHAT")
         self.assertIn("query_requests", captured[0]["format"]["properties"])
 
+    def test_pending_task_is_excluded_from_initial_chat_routing(self):
+        backend = OllamaBackend()
+        captured = []
+        partial = empty_candidate("NAVIGATE")
+        partial.update(destination_station_id="warehouse", return_required=True)
+
+        def respond(endpoint, payload):
+            captured.append(json.loads(payload["messages"][-1]["content"]))
+            return dict(done=True, message=dict(content=json.dumps(self.envelope())))
+
+        backend.post = respond
+        result = backend.interact(
+            "你好",
+            ["warehouse"],
+            [],
+            [dict(role="assistant", text="请补充返回工位")],
+            partial,
+        )
+        self.assertEqual(result.intent, "CHAT")
+        self.assertIsNone(result.task_answer)
+        self.assertEqual(len(captured), 1)
+        self.assertIsNone(captured[0]["partial_candidate"])
+        self.assertEqual(captured[0]["context"], [])
+        self.assertTrue(partial["return_required"])
+
+    def test_task_followup_reuses_pending_candidate_after_routing(self):
+        backend = OllamaBackend()
+        partial = empty_candidate("NAVIGATE")
+        partial.update(destination_station_id="warehouse", return_required=True)
+        completed = dict(partial, return_station_id="charger")
+        parameters = {
+            key: value
+            for key, value in completed.items()
+            if key not in ("task_type", "steps")
+        }
+        outputs = [
+            self.envelope("UNSUPPORTED", "请提供完整任务"),
+            self.envelope(
+                "TASK", "", tasks=[dict(task_type="NAVIGATE", parameters=parameters)]
+            ),
+        ]
+        captured = []
+
+        def respond(endpoint, payload):
+            captured.append(json.loads(payload["messages"][-1]["content"]))
+            return dict(done=True, message=dict(content=json.dumps(outputs.pop(0))))
+
+        backend.post = respond
+        result = backend.interact(
+            "返回充电区",
+            ["warehouse", "charger"],
+            [],
+            [dict(role="assistant", text="请补充返回工位")],
+            partial,
+        )
+        self.assertEqual(
+            result.task_answer.candidate["destination_station_id"], "warehouse"
+        )
+        self.assertEqual(result.task_answer.candidate["return_station_id"], "charger")
+        self.assertIsNone(captured[0]["partial_candidate"])
+        self.assertEqual(captured[1]["partial_candidate"], partial)
+
 
 class RobotStateCacheTests(unittest.TestCase):
     def setUp(self):

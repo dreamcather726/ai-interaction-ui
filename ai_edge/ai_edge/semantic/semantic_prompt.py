@@ -406,8 +406,22 @@ def build_interaction_messages(
             )
             for step in steps
         ]
+        clarify_carrying = [step["task_type"] for step in steps] == [
+            "TRANSPORT",
+            "PICK",
+            "NAVIGATE",
+        ] and steps[-1]["return_required"]
         messages[index]["content"] = json.dumps(
-            dict(intent="TASK", reply="", query_requests=[], tasks=tasks),
+            dict(
+                intent="CLARIFY" if clarify_carrying else "TASK",
+                reply=(
+                    "到目标点后，需要放下新抓取的物料再返回吗？"
+                    if clarify_carrying
+                    else ""
+                ),
+                query_requests=[],
+                tasks=tasks,
+            ),
             ensure_ascii=False,
         )
     for sample_text, intent, reply, queries in (
