@@ -3,7 +3,8 @@
 import json
 import unittest
 
-from ai_edge.semantic.semantic_contract import validate_candidate
+from ai_edge.semantic.ollama_backend import OllamaBackend
+from ai_edge.semantic.semantic_contract import empty_candidate, validate_candidate
 from ai_edge.semantic.semantic_prompt import build_messages
 from ai_edge.task_drafts.actions import validate_action_plan
 
@@ -78,6 +79,29 @@ class SemanticPromptTests(unittest.TestCase):
         self.assertEqual(payload["configured_entities"]["stations"][0]["name"], "仓库入口")
         size = sum(len(message["content"].encode("utf-8")) for message in self.messages)
         self.assertLess(size, 14000, "为真实输入、历史和白名单保留预算")
+
+    def test_backend_preserves_varied_station_counts_and_custom_ids(self):
+        configured_ids = [
+            "warehouse_entry", "loading_west", "inspection_zone", "dock_27",
+            "lift_lobby", "charger_north", "packing_room",
+        ]
+        for count in (1, 2, 4, 7):
+            with self.subTest(station_count=count):
+                stations = configured_ids[:count]
+                expected = empty_candidate("NAVIGATE")
+                expected["destination_station_id"] = stations[-1]
+                captured = []
+
+                def respond(endpoint, payload):
+                    captured.append(json.loads(payload["messages"][-1]["content"]))
+                    return {"done": True, "message": {"content": json.dumps(expected)}}
+
+                backend = OllamaBackend()
+                backend.post = respond
+                answer = backend.parse(f"导航到 {stations[-1]}", stations, [])
+                self.assertEqual(captured[0]["allowed_station_ids"], stations)
+                self.assertEqual(answer.candidate["destination_station_id"], stations[-1])
+                self.assertFalse(answer.missing_fields)
 
 
 if __name__ == "__main__":
