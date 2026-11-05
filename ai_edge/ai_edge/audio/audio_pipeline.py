@@ -350,8 +350,8 @@ class AudioPipeline:
 
         command = dialogue_command(result.text)
         if command:
-            self.finish_dialogue_command(command)
-            return
+            # 同时将控制词交给解析节点，清除那里的闲聊历史，避免旧任务被重新补回。
+            self.dialogues.forget(self.dialogue_key(job))
         self.stage("parse_wait", 3.0)
 
     def accept_parse(self, wrapped):
@@ -383,13 +383,14 @@ class AudioPipeline:
             else {
                 ParseTask.Result.NEED_CLARIFICATION: AudioProcessingState.NEED_CLARIFICATION,
                 ParseTask.Result.CANCELED: AudioProcessingState.CANCELED,
+                ParseTask.Result.RESPONDED: AudioProcessingState.INTERACTION_COMPLETED,
             }.get(result.outcome, AudioProcessingState.FAILED)
         )
         self.visualization.state(job, state, result.message, result.error_code)
         self.report(
             job,
             "/ai/parse_task",
-            ready,
+            ready or result.outcome == result.RESPONDED,
             f"{result.message}；解析结果文件：{path}",
             result.error_code,
         )

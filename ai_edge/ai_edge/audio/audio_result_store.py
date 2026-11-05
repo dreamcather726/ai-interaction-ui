@@ -41,6 +41,9 @@ def save_parse_result(audio_path, result):
         stamp={"sec": result.stamp.sec, "nanosec": result.stamp.nanosec},
         missing_fields=list(result.missing_fields),
         clarification_question=result.clarification_question,
+        intent=result.intent,
+        reply=result.reply,
+        query_result_json=result.query_result_json,
     )
     path = audio_path.with_suffix(".parse.json")
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -44,6 +44,20 @@ class RosWorker(QThread):
             self.commands.put_nowait((operation, value))
         except queue.Full:
             self.report_log(f"未能排入操作：{operation}，操作队列已满")
+            if operation == "text":
+                self.record.emit(
+                    "parse",
+                    dict(
+                        request_id=value["request_id"],
+                        success=False,
+                        outcome=3,
+                        intent="",
+                        reply="操作队列已满，请稍后再试。",
+                        message="操作队列已满，请稍后再试。",
+                        error_code="QUEUE_FULL",
+                    ),
+                )
+                return
             signal = (
                 self.catalog
                 if operation.startswith("catalog_")
@@ -167,6 +181,8 @@ class RosWorker(QThread):
                         self.node.drafts.send(operation.removeprefix("draft_"), value)
                     elif operation == "query":
                         self.node.request_query(value)
+                    elif operation == "text":
+                        self.node.conversation.send(value)
                     else:
                         self.node.request_control(operation)
                 self.node.poll()

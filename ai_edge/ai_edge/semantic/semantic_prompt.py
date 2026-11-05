@@ -1,11 +1,10 @@
-"""任务抽取提示词及交互协议草案；本模块不查询设备或授予执行权限。"""
+"""任务抽取及对话提示词；查询由程序发送请求，本模块不授予执行权限。"""
 
 import json
 
 from ai_edge.semantic.semantic_contract import SCHEMA, empty_candidate
 
-# 后续交互入口使用的提示词。现有 ParseTask/SCHEMA 没有 intent、reply 和查询字段，
-# build_messages 仍使用下方兼容任务协议的 SYSTEM_PROMPT，不能直接将两者互换。
+# 工作台交互入口使用此提示词；build_messages 保留兼容的纯任务抽取入口。
 INTERACTION_SYSTEM_PROMPT = """你是能够交流、查询机器人信息和理解任务指令的机器人助手，使用自然、简洁的中文。
 
 【输入与能力】
@@ -348,6 +347,120 @@ def build_messages(text, stations, objects, context, partial, entities=None):
         )
 
     # 当前请求始终放在示例之后。
+    messages.append(
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
+    )
+    return messages
+
+
+def build_interaction_messages(
+    text, stations, objects, context, partial, entities=None
+):
+    """复用经过校验的任务教学答案，同时加入闲聊和只读查询示例。"""
+    from ai_edge.semantic.interaction_contract import INTERACTION_SCHEMA, QUERY_TYPES
+
+    messages = build_messages(text, stations, objects, context, partial, entities)
+    payload = json.loads(messages.pop()["content"])
+    # 保留缺参、续轮和多点位示例，给真实配置及闲聊历史留出上下文预算。
+    selected = [messages[0]]
+    for index in range(1, len(messages), 2):
+        sample = json.loads(messages[index]["content"])
+        answer = json.loads(messages[index + 1]["content"])
+        if (
+            sample.get("partial_candidate") is not None
+            or len(sample["allowed_station_ids"]) > 2
+            or answer["task_type"] == "NAVIGATE"
+            or (answer["task_type"] == "TRANSPORT" and not answer["object_id"])
+        ):
+            selected.extend(messages[index : index + 2])
+    messages = selected
+    messages[0]["content"] = (
+        INTERACTION_SYSTEM_PROMPT
+        + "\n任务参数缺失用空字符串；未要求返回用false及空返回ID。"
+        + "\n当前程序只实现能力表中的动作；不要宣称其它能力可用。"
+        + "\n只读查询时reply留空，最终答复由程序依据真实查询结果生成，禁止先给出位置或状态。"
+        + "\n普通TASK的reply留空；CLARIFY可保留候选，但不能据此执行。"
+        + "\nNAVIGATE只填destination_station_id，object_id/pickup_station_id/dropoff_station_id必须为空。"
+        + "\nTRANSPORT只填object_id/pickup_station_id/dropoff_station_id，destination_station_id必须为空。"
+        + "\nPICK只填object_id/pickup_station_id；PLACE只填object_id/dropoff_station_id；其余ID为空，return_required=false。"
+        + "\n仅在明确要求返回时return_required=true并填写return_station_id，否则false和空字符串。"
+        + "\n只查询用户实际询问的项目：位置对应ROBOT_LOCATION，运行状态对应ROBOT_STATUS，电量对应ROBOT_BATTERY。"
+        + "\n询问状态或电量不自动查询位置；同轮明确问到多项才逐一请求。"
+        + "\n补充任务时遇到闲聊或查询，保留partial_candidate，不把它当成本轮任务输出。"
+        + "\nJSON schema:\n"
+        + json.dumps(INTERACTION_SCHEMA)
+    )
+    for index in range(2, len(messages), 2):
+        candidate = json.loads(messages[index]["content"])
+        steps = (
+            candidate["steps"] if candidate["task_type"] == "SEQUENCE" else [candidate]
+        )
+        tasks = [
+            dict(
+                task_type=step["task_type"],
+                parameters={
+                    key: value
+                    for key, value in step.items()
+                    if key not in ("task_type", "steps")
+                },
+            )
+            for step in steps
+        ]
+        messages[index]["content"] = json.dumps(
+            dict(intent="TASK", reply="", query_requests=[], tasks=tasks),
+            ensure_ascii=False,
+        )
+    for sample_text, intent, reply, queries in (
+        (
+            "你好，介绍一下自己",
+            "CHAT",
+            "你好！我是机器人助手，可以和你聊天、查询位置和状态，也能帮你编排已支持的任务。",
+            [],
+        ),
+        (
+            "你现在在哪里？",
+            "QUERY",
+            "",
+            [dict(query_type="ROBOT_LOCATION", parameters={})],
+        ),
+        (
+            "现在在忙什么，电量还剩多少？",
+            "QUERY",
+            "",
+            [
+                dict(query_type="ROBOT_STATUS", parameters={}),
+                dict(query_type="ROBOT_BATTERY", parameters={}),
+            ],
+        ),
+    ):
+        messages.extend(
+            [
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        dict(text=sample_text, context=[], partial_candidate=None),
+                        ensure_ascii=False,
+                    ),
+                },
+                {
+                    "role": "assistant",
+                    "content": json.dumps(
+                        dict(
+                            intent=intent, reply=reply, query_requests=queries, tasks=[]
+                        ),
+                        ensure_ascii=False,
+                    ),
+                },
+            ]
+        )
+    payload["task_capabilities"] = [
+        dict(task_type=kind, parameters="遵守本轮JSON Schema中的parameters定义")
+        for kind in ("NAVIGATE", "TRANSPORT", "PICK", "PLACE")
+    ]
+    payload["query_capabilities"] = [
+        dict(query_type=kind, parameters={}) for kind in QUERY_TYPES
+    ]
+    payload["query_results"] = []
     messages.append(
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}
     )

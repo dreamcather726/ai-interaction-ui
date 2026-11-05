@@ -52,6 +52,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RecognizeAudio.srv"
   "srv/ProcessAudio.srv"
   "srv/QueryAudio.srv"
+  "srv/QueryRobotState.srv"
   "action/ParseTask.action"
   "action/ExecuteTask.action"
   "action/Speak.action"

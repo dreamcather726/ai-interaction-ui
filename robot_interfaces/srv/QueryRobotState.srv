@@ -1,0 +1,12 @@
+# Read-only request. Data comes from the configured telemetry topics.
+builtin_interfaces/Time stamp
+string request_id
+string query_type
+---
+builtin_interfaces/Time stamp
+string request_id
+bool success
+string error_code
+string message
+string reply
+string data_json

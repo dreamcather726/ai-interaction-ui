@@ -77,7 +77,7 @@ class PipelineStrip(QFrame):
         active = {0: 0, 1: 1, 2: 1, 3: 2, 4: 2}.get(stage)
         for index, value in enumerate(self.steps):
             tone = "idle"
-            if stage in (5, 6):
+            if stage in (5, 6, 11):
                 tone = "good"
             elif active is not None:
                 tone = (

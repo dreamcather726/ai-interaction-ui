@@ -22,6 +22,7 @@ from robot_interfaces.srv import ProcessAudio, QueryAudio, RecognizeAudio
 from robot_visualization.config import DashboardConfig
 from robot_visualization.state import STAGES
 from robot_visualization.ros.drafts import DraftClient
+from robot_visualization.ros.conversation import ConversationClient
 from robot_visualization.runtime.console import format_log, log_level
 
 
@@ -54,6 +55,7 @@ class DashboardNode(Node):
         self.asr_client = self.create_client(RecognizeAudio, "/ai/recognize_audio")
         self.process_client = self.create_client(ProcessAudio, "/ai/process_audio")
         self.parser = ActionClient(self, ParseTask, "/ai/parse_task")
+        self.conversation = ConversationClient(self, events, payload)
         self.pending = {}
         self.components = {}
         self.sequences = {}
@@ -119,6 +121,7 @@ class DashboardNode(Node):
             "audio_receiver_node",
             "microphone_sender_node",
             "task_draft_node",
+            "robot_state_query_node",
         }
         if message.name in names and message.name not in self.owned_nodes:
             level = (
@@ -197,6 +200,7 @@ class DashboardNode(Node):
         )
 
     def poll(self):
+        self.conversation.poll()
         if self.simulation is not None:
             self.simulation.poll()
         self.drafts.poll()
@@ -342,6 +346,7 @@ class DashboardNode(Node):
                 "asr_ready": ready,
                 "query": self.query_client.service_is_ready(),
                 "connected": self.process_client.service_is_ready(),
+                "conversation": self.parser.server_is_ready(),
                 "drafts": self.drafts.ready(),
                 "hint": (
                     microphone.message
@@ -360,6 +365,7 @@ class DashboardNode(Node):
             self.events.report_log(message)
 
     def close(self):
+        self.conversation.close()
         if self.simulation is not None:
             self.simulation.close()
         self.drafts.close()

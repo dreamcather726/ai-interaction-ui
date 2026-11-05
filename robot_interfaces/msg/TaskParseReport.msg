@@ -12,7 +12,11 @@ uint8 NEED_CLARIFICATION=1
 uint8 UNSUPPORTED=2
 uint8 FAILED=3
 uint8 CANCELED=4
+uint8 RESPONDED=5
 uint8 outcome
 robot_interfaces/TaskCandidate candidate
 string[] missing_fields
 string clarification_question
+string intent
+string reply
+string query_result_json

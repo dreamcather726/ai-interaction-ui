@@ -36,6 +36,11 @@ def build_dashboard():
     window.start_requested.connect(lambda: worker.command("start"))
     window.stop_requested.connect(lambda: worker.command("stop"))
     window.query_requested.connect(lambda value: worker.command("query", value))
+    window.text_requested.connect(
+        lambda request_id, text: worker.command(
+            "text", dict(request_id=request_id, text=text)
+        )
+    )
     window.shutdown_requested.connect(
         lambda: (
             worker.requestInterruption()

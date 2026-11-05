@@ -3,6 +3,7 @@
 import json
 import time
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QKeySequence, QShortcut
@@ -36,6 +37,7 @@ class DashboardWindow(QMainWindow):
     shutdown_requested = Signal()
     draft_requested = Signal(str, dict)
     catalog_requested = Signal(str, dict)
+    text_requested = Signal(str, str)
 
     def __init__(self, config):
         super().__init__()
@@ -52,6 +54,7 @@ class DashboardWindow(QMainWindow):
         self.recording_since = None
         self.can_close = False
         self.closing = False
+        self.text_pending = None
         self.setWindowTitle("机器人可视化与监控平台 · 三栏监控版")
         # 普通窗口大小为1440×900；应用入口默认全屏，F11可恢复普通窗口。
         available = self.screen().availableGeometry()
@@ -173,6 +176,14 @@ class DashboardWindow(QMainWindow):
         self.start_button.setEnabled(bool(can_start))
         self.stop_button.setEnabled(bool(can_stop))
         self.query_button.setEnabled(bool(value.get("query") and not self.closing))
+        for button in self.conversation_buttons:
+            button.setEnabled(
+                bool(
+                    value.get("conversation", value.get("connected"))
+                    and not self.closing
+                    and self.text_pending is None
+                )
+            )
         self.draft_panel.setEnabled(not self.closing)
         self.draft_panel.set_online(value.get("drafts", False))
         self.home_drafts.refresh()
@@ -254,6 +265,46 @@ class DashboardWindow(QMainWindow):
                 self.show_record()
             self.query_requested.emit(request_id)
 
+    def send_text(self, text):
+        text = text.strip()
+        if not text or not self.chat_send_button.isEnabled():
+            return
+        request_id = "text-request-" + uuid4().hex
+        self.text_pending = request_id
+        self.receive_record(
+            "asr", dict(request_id=request_id, text=text, source="text")
+        )
+        self.text_input.clear()
+        self.chat_input.clear()
+        self.conversation_status.setText("正在等待助手回复……")
+        self.command_pages.setCurrentIndex(self.conversation_page_index)
+        self.refresh_controls()
+        self.text_requested.emit(request_id, text)
+
+    def refresh_conversation(self):
+        turns = []
+        for request_id, record in self.store.records.items():
+            text = record.get("asr", {}).get("text", "")
+            parsed = record.get("parse", {})
+            reply = (
+                parsed.get("reply")
+                or parsed.get("clarification_question")
+                or parsed.get("message", "")
+            )
+            if not reply and record.get("state", {}).get("stage") in (7, 9):
+                reply = record["state"].get("message", "")
+            if text:
+                turns.append(f"你：{text}")
+            if reply:
+                turns.append(f"助手：{reply}")
+            if text or reply:
+                turns.append("")
+        self.conversation_text.setPlainText("\n".join(turns).strip())
+        QTimer.singleShot(0, self.show_latest_reply)
+
+    def show_latest_reply(self):
+        self.conversation_text.pager.go(self.conversation_text.pager.pages - 1)
+
     @Slot(str, dict)
     def receive_record(self, kind, value):
         if kind.startswith(("robot_", "sim_")):
@@ -262,9 +313,30 @@ class DashboardWindow(QMainWindow):
                 self.home_drafts.refresh()
             return
         request_id = value.get("request_id")
+        previous_reply = (
+            self.store.records.get(request_id, {}).get("parse", {}).get("reply")
+        )
         is_new = request_id not in self.store.records
         if not self.store.apply(kind, value):
             return
+        if kind == "parse":
+            if request_id == self.text_pending:
+                self.text_pending = None
+                self.refresh_controls()
+            if value.get("reply"):
+                self.conversation_status.setText(
+                    "查询未能获得有效数据"
+                    if value.get("error_code") and value.get("intent") == "QUERY"
+                    else "助手已回复"
+                )
+            if value.get("reply") != previous_reply and value.get("intent") in (
+                "CHAT",
+                "QUERY",
+                "CLARIFY",
+                "UNSUPPORTED",
+            ):
+                self.command_pages.setCurrentIndex(self.conversation_page_index)
+        self.refresh_conversation()
         if self.selected_request is None or is_new:
             self.selected_request = request_id
         if self.selected_request not in self.store.records:
@@ -306,7 +378,7 @@ class DashboardWindow(QMainWindow):
         self.pipeline.update_stage(
             stage,
             state.get("operation", ""),
-            stage in (5, 6, 10),
+            stage in (5, 6, 10, 11),
             state.get("error_code", ""),
         )
         # Voice stages update PipelineStrip only. Robot progress is authoritative.

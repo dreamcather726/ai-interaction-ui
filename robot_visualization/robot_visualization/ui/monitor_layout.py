@@ -295,7 +295,7 @@ def build_camera(window):
 
 
 def build_commands(window):
-    card = compact_card("AI 指令 / 当前语音任务")
+    card = compact_card("AI 助手 / 语音、对话与任务")
     icon_heading(window, card, QStyle.StandardPixmap.SP_MediaVolume)
     window.command_pages = PageTabs()
     source_page = QWidget()
@@ -328,7 +328,26 @@ def build_commands(window):
     window.control_message = ElidedLabel()
     layout.addWidget(window.control_message)
     window.input_tabs.addTab(voice, "语音输入")
-    window.input_tabs.addTab(label("文本指令待接入", "muted"), "文本指令")
+    text_page = QWidget()
+    text_body = QVBoxLayout(text_page)
+    text_body.setContentsMargins(0, 2, 0, 0)
+    text_body.addWidget(
+        label("输入任务、问候或位置问题；回复显示在“对话与查询”。", "muted", True)
+    )
+    window.text_input = QLineEdit()
+    window.text_input.setMaxLength(4096)
+    window.text_input.setPlaceholderText("例如：你好 / 你现在在哪里 / 去已配置的工位")
+    text_body.addWidget(window.text_input)
+    window.text_send_button = QPushButton("发送文字")
+    window.text_send_button.setObjectName("primary")
+    window.text_send_button.clicked.connect(
+        lambda: window.send_text(window.text_input.text())
+    )
+    window.text_input.returnPressed.connect(
+        lambda: window.send_text(window.text_input.text())
+    )
+    text_body.addWidget(window.text_send_button)
+    window.input_tabs.addTab(text_page, "文字输入")
     source_body.addWidget(window.input_tabs)
     source_body.addWidget(label("解析结果（结构化指令）", "section"))
     parsed = QHBoxLayout()
@@ -356,7 +375,7 @@ def build_commands(window):
     )
     window.home_draft_hint.setObjectName("muted")
     source_body.addWidget(window.home_draft_hint)
-    window.command_pages.addTab(source_page, "语音与候选")
+    window.command_pages.addTab(source_page, "输入与候选")
     draft_page = QWidget()
     draft_body = QVBoxLayout(draft_page)
     draft_body.setContentsMargins(0, 2, 0, 0)
@@ -375,6 +394,53 @@ def build_commands(window):
         label("确认入口在右侧任务流程卡片底部；执行端自主运行整份任务。", "muted", True)
     )
     window.command_pages.addTab(draft_page, "任务草稿 · 确认前核对")
+    conversation = QWidget()
+    chat_body = QVBoxLayout(conversation)
+    chat_body.setContentsMargins(0, 2, 0, 0)
+    chat_body.addWidget(
+        label(
+            "语音和文字回复都显示在这里；位置、状态和电量通过实际请求查询。",
+            "muted",
+            True,
+        )
+    )
+    window.conversation_text = PagedText()
+    chat_body.addWidget(window.conversation_text, 1)
+    window.conversation_status = ElidedLabel("等待输入；可录音，也可直接发送文字")
+    chat_body.addWidget(window.conversation_status)
+    quick = QHBoxLayout()
+    window.conversation_buttons = [window.text_send_button]
+    for title, text in (
+        ("查询位置", "你现在在哪里？"),
+        ("查询状态", "机器人现在是什么状态？"),
+        ("查询电量", "当前电量还剩多少？"),
+    ):
+        button = QPushButton(title)
+        button.clicked.connect(
+            lambda checked=False, value=text: window.send_text(value)
+        )
+        quick.addWidget(button)
+        window.conversation_buttons.append(button)
+    chat_body.addLayout(quick)
+    send_row = QHBoxLayout()
+    window.chat_input = QLineEdit()
+    window.chat_input.setMaxLength(4096)
+    window.chat_input.setPlaceholderText("和机器人说点什么，按回车发送")
+    send_row.addWidget(window.chat_input, 1)
+    window.chat_send_button = QPushButton("发送")
+    window.chat_send_button.setObjectName("primary")
+    window.chat_send_button.clicked.connect(
+        lambda: window.send_text(window.chat_input.text())
+    )
+    window.chat_input.returnPressed.connect(
+        lambda: window.send_text(window.chat_input.text())
+    )
+    send_row.addWidget(window.chat_send_button)
+    window.conversation_buttons.append(window.chat_send_button)
+    chat_body.addLayout(send_row)
+    window.conversation_page_index = window.command_pages.addTab(
+        conversation, "对话与查询"
+    )
     card.body.addWidget(window.command_pages, 1)
     return card
 

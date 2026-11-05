@@ -21,6 +21,7 @@ uint8 FAILED=7
 uint8 CANCELED=8
 uint8 NO_SPEECH=9
 uint8 ASR_COMPLETED=10
+uint8 INTERACTION_COMPLETED=11
 uint8 stage
 string message
 string error_code

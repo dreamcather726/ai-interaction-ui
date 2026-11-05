@@ -3,6 +3,8 @@
 from ai_edge.common import error_codes as Codes
 
 import time
+import json
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 import rclpy
@@ -16,9 +18,11 @@ from ai_edge.semantic.ollama_backend import OllamaBackend
 from ai_edge.semantic.semantic_contract import SemanticError
 from ai_edge.semantic.semantic_input import read_parse_goal
 from ai_edge.semantic.ros_candidates import assign_candidate
+from ai_edge.semantic.dialogue import bounded_context, dialogue_command
 from ai_edge.common.catalog import node_catalog
 from robot_interfaces.action import ParseTask
 from robot_interfaces.msg import ComponentStatus, RequestStatus
+from robot_interfaces.srv import QueryRobotState
 
 
 class ParseTaskNode(Node):
@@ -43,6 +47,9 @@ class ParseTaskNode(Node):
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ollama")
         self.pending = None
         self.reserved = False
+        self.query_pending = None
+        self.conversations = OrderedDict()
+        self.robot_query = self.create_client(QueryRobotState, "/ai/query_robot_state")
         self.receipts = self.create_publisher(RequestStatus, "/ai/request_status", 10)
         self.health_pub = self.create_publisher(
             ComponentStatus, "/robot/component_status", 20
@@ -98,6 +105,24 @@ class ParseTaskNode(Node):
 
     def poll(self):
         """取消先于迟到结果；底层 HTTP 未返回时仍保留忙碌槽位。"""
+        query = getattr(self, "query_pending", None)
+        if query is not None:
+            try:
+                if query["handle"].is_cancel_requested:
+                    raise SemanticError(Codes.CANCELED, "查询已取消")
+                if time.monotonic() >= query["deadline"]:
+                    raise SemanticError(
+                        "ROBOT_QUERY_TIMEOUT",
+                        "机器人查询请求超时，当前位置或状态尚未确认。",
+                    )
+                if query["future"].done():
+                    query["response"].set_result(query["future"].result())
+                    self.query_pending = None
+            except Exception as exc:
+                self.robot_query.remove_pending_request(query["future"])
+                query["future"].cancel()
+                query["response"].set_exception(exc)
+                self.query_pending = None
         if self.pending is None:
             return
         job = self.pending
@@ -155,51 +180,113 @@ class ParseTaskNode(Node):
         for field in ("request_id", "session_id", "input_id", "input_context_id"):
             setattr(result, field, getattr(handle.request, field))
         result.outcome = result.FAILED
+        result.stamp = self.get_clock().now().to_msg()
         try:
             self.feedback(handle, ParseTask.Feedback.QUEUED, "语义请求已受理")
-            args = read_parse_goal(handle.request)
+            args = list(read_parse_goal(handle.request))
+            key = (handle.request.session_id, handle.request.input_context_id)
+            command = dialogue_command(handle.request.text)
+            if command:
+                self.conversations.pop(key, None)
+                result.outcome, result.intent = result.RESPONDED, "CHAT"
+                result.message = result.reply = (
+                    "已清空待补充信息，请重新描述完整任务。"
+                    if command == "reset"
+                    else "已取消当前待补充任务；不会取消已经执行的机器人任务。"
+                )
+                handle.succeed()
+                return result
+            if not args[3]:
+                args[3] = self.conversations.get(key, [])
             response = Future()
             self.pending = {
-                "worker": self.worker.submit(self.backend.parse, *args),
+                "worker": self.worker.submit(self.backend.interact, *args),
                 "response": response,
                 "handle": handle,
                 "deadline": time.monotonic() + self.timeout,
                 "discard": False,
             }
             self.feedback(
-                handle, ParseTask.Feedback.INFERENCING, "正在使用千问 2B 解析任务"
+                handle,
+                ParseTask.Feedback.INFERENCING,
+                f"正在使用 {self.backend.model} 理解输入",
             )
-            answer = await response
+            interaction = await response
             if handle.is_cancel_requested:
                 raise SemanticError(Codes.CANCELED, "语义解析已取消")
             self.feedback(
                 handle, ParseTask.Feedback.VALIDATING, "模型输出及白名单校验已完成"
             )
-            assign_candidate(
-                result.candidate, answer.candidate, self.get_clock().now().to_msg()
-            )
-            if answer.unsupported:
+            result.intent, result.reply = interaction.intent, interaction.reply
+            query_results = []
+            for kind in interaction.query_types:
+                query_results.append(await self.query_robot(handle, kind))
+            if handle.is_cancel_requested:
+                raise SemanticError(Codes.CANCELED, "交互已取消")
+            if query_results:
+                result.reply = "\n".join(value["reply"] for value in query_results)
+                result.query_result_json = json.dumps(query_results, ensure_ascii=False)
+                result.error_code = next(
+                    (
+                        value["error_code"]
+                        for value in query_results
+                        if value["error_code"]
+                    ),
+                    "",
+                )
+            answer = interaction.task_answer
+            if interaction.intent == "UNSUPPORTED":
                 result.outcome, result.error_code = (
                     result.UNSUPPORTED,
                     Codes.UNSUPPORTED_TASK,
                 )
-                result.message = (
-                    "未识别到支持的导航、抓取、放下或搬运任务，此输入未生成候选"
-                )
+                result.message = result.reply or "当前尚不支持这项能力。"
                 handle.abort()
+            elif (
+                answer is None
+                or interaction.intent == "CLARIFY"
+                or any(not item["success"] for item in query_results)
+            ):
+                result.outcome = result.RESPONDED
+                result.message = result.reply or "本轮交互已处理。"
+                handle.succeed()
             elif answer.missing_fields:
+                assign_candidate(
+                    result.candidate, answer.candidate, self.get_clock().now().to_msg()
+                )
                 result.outcome, result.error_code = (
                     result.NEED_CLARIFICATION,
                     Codes.MISSING_FIELDS,
                 )
                 result.missing_fields = list(answer.missing_fields)
                 result.clarification_question = answer.clarification_question
+                result.reply = "\n".join(
+                    filter(None, (result.reply, answer.clarification_question))
+                )
                 result.message = "任务信息不完整，需要补充后再解析"
                 handle.succeed()
             else:
+                assign_candidate(
+                    result.candidate, answer.candidate, self.get_clock().now().to_msg()
+                )
                 result.outcome, result.success = result.READY, True
+                result.reply = "\n".join(
+                    filter(
+                        None, (result.reply, "任务候选已生成，请在草稿中核对后确认。")
+                    )
+                )
                 result.message = "任务候选已生成，仍需准备及用户明确确认"
                 handle.succeed()
+            self.conversations[key] = bounded_context(
+                [
+                    *self.conversations.get(key, []),
+                    {"role": "user", "text": handle.request.text},
+                    {"role": "assistant", "text": result.reply or result.message},
+                ]
+            )
+            self.conversations.move_to_end(key)
+            while len(self.conversations) > 100:
+                self.conversations.popitem(last=False)
         except Exception as exc:
             result.error_code = getattr(exc, "code", Codes.LLM_UNAVAILABLE)
             result.message = str(exc)
@@ -217,12 +304,63 @@ class ParseTaskNode(Node):
         )
         return result
 
+    async def query_robot(self, handle, kind):
+        """由模型选择查询类型，程序发送实际ROS请求并采用服务端的事实答复。"""
+        value = dict(query_type=kind, success=False, reply="", error_code="", data={})
+        if not self.robot_query.service_is_ready():
+            value.update(
+                reply="机器人查询服务尚未连接，暂时无法确认当前位置或状态。",
+                error_code="ROBOT_QUERY_UNAVAILABLE",
+            )
+            return value
+        request = QueryRobotState.Request()
+        request.stamp = self.get_clock().now().to_msg()
+        request.request_id = handle.request.request_id + ":" + kind
+        request.query_type = kind
+        response = Future()
+        self.query_pending = dict(
+            future=self.robot_query.call_async(request),
+            response=response,
+            handle=handle,
+            deadline=time.monotonic() + 3.0,
+        )
+        try:
+            result = await response
+            if result.request_id != request.request_id or not result.reply.strip():
+                raise SemanticError(
+                    "ROBOT_QUERY_INVALID", "机器人查询响应不匹配或缺少答复。"
+                )
+            value.update(
+                success=result.success,
+                reply=result.reply,
+                error_code=result.error_code,
+                data=json.loads(result.data_json or "{}"),
+            )
+        except SemanticError as exc:
+            if exc.code == Codes.CANCELED:
+                raise
+            value.update(reply=str(exc), error_code=exc.code)
+        except Exception:
+            value.update(
+                reply="机器人查询响应无效，暂时无法确认当前位置或状态。",
+                error_code="ROBOT_QUERY_INVALID",
+            )
+        return value
+
     def close(self):
         """停止接收新工作；Python 无法强制终止正在进行的 HTTP 线程。"""
         self.timer.cancel()
         self.health_timer.cancel()
         self.server.destroy()
         self.worker.shutdown(wait=False, cancel_futures=True)
+        if self.query_pending is not None:
+            self.robot_query.remove_pending_request(self.query_pending["future"])
+            self.query_pending["future"].cancel()
+            if not self.query_pending["response"].done():
+                self.query_pending["response"].set_exception(
+                    SemanticError(Codes.CANCELED, "节点退出，查询已取消")
+                )
+        self.robot_query.destroy()
 
 
 def main(args=None):

@@ -75,13 +75,13 @@ def validate_asr_result(msg, result):
     return bool(valid)
 
 
-def validate_parse_result(msg, wrapped, stations, objects):
+def validate_parse_result(msg, wrapped, stations, objects, *, input_id=None):
     """检查 Action 终态及语义结果；返回是否得到完整有效候选。"""
     result = wrapped.result
     expected = (
         msg.request_id,
         msg.session_id,
-        "audio:" + msg.segment_id,
+        input_id if input_id is not None else "audio:" + msg.segment_id,
         msg.input_context_id,
     )
     actual = (
@@ -142,7 +142,26 @@ def validate_parse_result(msg, wrapped, stations, objects):
             )
         )
     )
-    if not result.message.strip() or not (ready or clarification or terminal_failure):
+    responded = (
+        wrapped.status == GoalStatus.STATUS_SUCCEEDED
+        and result.outcome == ParseTask.Result.RESPONDED
+        and not result.success
+        and result.intent in ("CHAT", "QUERY", "CLARIFY")
+        and bool(result.reply.strip())
+        and not result.missing_fields
+        and not result.clarification_question
+    )
+    if responded:
+        try:
+            checked = validate_candidate(
+                candidate_payload(result.candidate), stations, objects
+            )
+            responded = checked.unsupported
+        except SemanticError:
+            responded = False
+    if not result.message.strip() or not (
+        ready or clarification or terminal_failure or responded
+    ):
         raise ResultValidationError(
             Codes.INVALID_MODEL_OUTPUT, "Action 终态与语义解析结果不一致"
         )

@@ -15,7 +15,11 @@ from ai_edge.semantic.semantic_contract import (
     reconcile_candidate,
     validate_candidate,
 )
-from ai_edge.semantic.semantic_prompt import build_messages
+from ai_edge.semantic.semantic_prompt import build_messages, build_interaction_messages
+from ai_edge.semantic.interaction_contract import (
+    INTERACTION_SCHEMA,
+    validate_interaction,
+)
 
 
 class OllamaBackend:
@@ -83,7 +87,7 @@ class OllamaBackend:
         """只检查已安装模型，不自动下载模型或改动 Ollama 服务配置。"""
         self.post("/api/show", {"model": self.model}, timeout=5.0)
 
-    def parse(self, text, stations, objects, context=(), partial=None):
+    def entities(self, stations, objects):
         entities = None
         if self.catalog is not None:
             snapshot = self.catalog.read(stations, objects)
@@ -101,9 +105,9 @@ class OllamaBackend:
                 ]
                 for kind, ids in (("stations", stations), ("objects", objects))
             }
-        messages = build_messages(
-            text, stations, objects, list(context), partial, entities
-        )
+        return entities
+
+    def generate(self, messages, schema):
         # UTF-8 字节数是 token 数的保守上界；给消息模板与输出留出上下文余量。
         if sum(len(item["content"].encode("utf-8")) for item in messages) > 16000:
             raise SemanticError(
@@ -116,7 +120,7 @@ class OllamaBackend:
                 "messages": messages,
                 "stream": False,
                 "think": False,
-                "format": SCHEMA,
+                "format": schema,
                 "keep_alive": "5m",
                 "options": {"temperature": 0, "num_predict": 16000, "num_ctx": 32768},
             },
@@ -132,7 +136,32 @@ class OllamaBackend:
             raise SemanticError(
                 Codes.INVALID_MODEL_OUTPUT, "模型未返回完整的任务 JSON"
             ) from exc
+        return candidate
+
+    def parse(self, text, stations, objects, context=(), partial=None):
+        messages = build_messages(
+            text,
+            stations,
+            objects,
+            list(context),
+            partial,
+            self.entities(stations, objects),
+        )
+        candidate = self.generate(messages, SCHEMA)
         # 先校验原始输出，再补回模型遗漏的已有字段，最后重新检查完整候选。
         checked = validate_candidate(candidate, stations, objects)
         merged = reconcile_candidate(checked.candidate, partial)
         return validate_candidate(merged, stations, objects)
+
+    def interact(self, text, stations, objects, context=(), partial=None):
+        messages = build_interaction_messages(
+            text,
+            stations,
+            objects,
+            list(context),
+            partial,
+            self.entities(stations, objects),
+        )
+        return validate_interaction(
+            self.generate(messages, INTERACTION_SCHEMA), stations, objects, partial
+        )

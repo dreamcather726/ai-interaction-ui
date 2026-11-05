@@ -122,6 +122,24 @@ class BackendSupervisor:
                 "audio_processing_node",
                 ros_command("ai_edge", "audio_processing_node", params),
             )
+        robot = getattr(c, "robot", None)
+        plans.append(
+            (
+                "robot_state_query_node",
+                ros_command(
+                    "ai_edge",
+                    "robot_state_query_node",
+                    {
+                        "odom_topic": getattr(robot, "odom_topic", "/odom"),
+                        "status_topic": getattr(robot, "status_topic", "/robot/status"),
+                        "battery_topic": getattr(
+                            robot, "battery_topic", "/battery_state"
+                        ),
+                        "max_data_age": getattr(robot, "telemetry_timeout", 2.0),
+                    },
+                ),
+            )
+        )
         draft_params = {
             "database_path": str(c.audio_root.parent / "task_data/task_drafts.sqlite3"),
             "catalog_path": catalog_path,
