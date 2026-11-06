@@ -695,7 +695,7 @@ class WindowTests(unittest.TestCase):
             ),
         }
         with patch(
-            "robot_visualization.ui.simulation.time.monotonic", return_value=10.0
+            "robot_visualization.ui.robot.time.monotonic", return_value=10.0
         ):
             for kind, sample in samples.items():
                 window.receive_record(
@@ -706,7 +706,7 @@ class WindowTests(unittest.TestCase):
             self.assertTrue(window.robot_page_battery.isEnabled())
             self.assertIn("box_1", window.material_state_label.text())
         with patch(
-            "robot_visualization.ui.simulation.time.monotonic", return_value=12.1
+            "robot_visualization.ui.robot.time.monotonic", return_value=12.1
         ):
             # Replayed source stamps must not keep old sensor data alive.
             for kind, sample in samples.items():
@@ -723,7 +723,7 @@ class WindowTests(unittest.TestCase):
             self.assertEqual(window.robot_page_battery.value(), 82)
             self.assertIn("已过期", window.robot_page_battery.format())
         with patch(
-            "robot_visualization.ui.simulation.time.monotonic", return_value=12.2
+            "robot_visualization.ui.robot.time.monotonic", return_value=12.2
         ):
             for kind, sample in samples.items():
                 window.receive_record(

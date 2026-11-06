@@ -11,7 +11,7 @@ from sensor_msgs.msg import BatteryState
 from robot_interfaces.msg import RobotStatus
 from robot_interfaces.srv import QueryRobotState
 
-from ai_edge.semantic.robot_state_query import RobotStateCache
+from ai_edge.queries.robot_state_query import RobotStateCache
 
 
 def stamp_ns(stamp):

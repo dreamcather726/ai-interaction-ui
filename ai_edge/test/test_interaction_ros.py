@@ -15,7 +15,7 @@ try:
     from robot_interfaces.action import ParseTask
     from robot_interfaces.msg import DialogueTurn
     from ai_edge.semantic.parse_task_node import ParseTaskNode
-    from ai_edge.semantic.robot_state_query_node import RobotStateQueryNode
+    from ai_edge.queries.robot_state_query_node import RobotStateQueryNode
     from ai_edge.semantic.interaction_contract import InteractionAnswer
     from ai_edge.semantic.semantic_contract import empty_candidate, validate_candidate
     from ai_edge.semantic.ros_candidates import assign_candidate

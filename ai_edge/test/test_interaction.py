@@ -7,7 +7,7 @@ from ai_edge.semantic.interaction_contract import validate_interaction
 from ai_edge.semantic.semantic_contract import SemanticError, empty_candidate
 from ai_edge.semantic.semantic_prompt import build_interaction_messages
 from ai_edge.semantic.ollama_backend import OllamaBackend
-from ai_edge.semantic.robot_state_query import RobotStateCache
+from ai_edge.queries.robot_state_query import RobotStateCache
 
 
 class InteractionTests(unittest.TestCase):

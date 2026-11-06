@@ -64,7 +64,7 @@ class DashboardWindow(QMainWindow):
         self.resize(min(1440, width), min(900, height))
         self.setStyleSheet(STYLE)
         self.build_ui()
-        from robot_visualization.ui.simulation import RobotView
+        from robot_visualization.ui.robot import RobotView
 
         self.robot_view = RobotView(self)
         self.simulation_view = self.robot_view  # Compatibility alias.

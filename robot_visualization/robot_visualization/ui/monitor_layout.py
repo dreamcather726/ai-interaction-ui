@@ -130,7 +130,7 @@ def build_device_page(window, kind):
         layout.addLayout(grid, 1)
         return page
 
-    from robot_visualization.ui.simulation import RobotImage
+    from robot_visualization.ui.robot import RobotImage
 
     card = compact_card(title, "数据 · 与首页共享消息，切页保留最新画面")
     view = RobotImage(
@@ -255,7 +255,7 @@ def build_home(window):
 def build_map(window):
     card = compact_card("SLAM 地图 / 机器人定位")
     icon_heading(window, card, QStyle.StandardPixmap.SP_DirIcon)
-    from robot_visualization.ui.simulation import RobotImage
+    from robot_visualization.ui.robot import RobotImage
 
     view = RobotImage("Waiting for map")
     window.map_view = view
@@ -283,7 +283,7 @@ def build_camera(window):
     collapse.setObjectName("small")
     collapse.setEnabled(False)
     card.heading.addWidget(collapse)
-    from robot_visualization.ui.simulation import RobotImage
+    from robot_visualization.ui.robot import RobotImage
 
     video = RobotImage("Waiting for camera")
     window.camera_view = video
