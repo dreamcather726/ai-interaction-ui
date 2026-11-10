@@ -145,6 +145,83 @@ print(result["message"])
 
 **观察：** 输出 `False` 和错误原因，不会拿上次文字补本次结果。这里的字典与字符串状态是教学表示，实际输出按任务书中的正式类型处理。
 
+### 7. PCM 采样值：音频字节里保存了什么
+
+16 位 PCM 用整数表示采样值。`struct` 可以在数字与字节之间转换；下面的 `<` 表示小端字节顺序，`h` 表示有符号的 16 位整数。
+
+```python
+import struct
+
+samples = [0, 1000, -1000, 0]  # 四个演示采样值，不是一段真实语音
+pcm = struct.pack("<4h", *samples)  # * 把列表中的数字逐个传入
+restored = struct.unpack("<4h", pcm)
+
+print("字节数：", len(pcm))  # 四个采样，每个占两个字节
+print("还原采样：", restored)
+print("最大绝对值：", max(abs(value) for value in restored))
+```
+
+**观察：** 字节数为 `8`，还原后仍是原来的四个值。音量幅度可以辅助观察音频，但幅度大不一定是语音，幅度小也不一定没有语音，不能拿这个例子代替语音活动检测。
+
+### 8. 格式判断：用条件表达式核对参数
+
+读取 WAV 参数后，需要把实际值与允许值比较。`!=` 表示“不等于”，`return` 会结束本次函数调用并交回结果。格式不符时先说明原因，再决定是否需要转换。
+
+```python
+def check_format(sample_rate, channels, sample_width):
+    if sample_rate != 16000:
+        return False, "采样率需要为 16000 Hz"
+    if channels != 1:
+        return False, "需要单声道音频"
+    if sample_width != 2:  # 参数单位为字节，2 字节等于 16 位
+        return False, "需要 16 位采样"
+    return True, "三个参数符合要求"
+
+
+print(check_format(16000, 1, 2))
+print(check_format(48000, 2, 2))
+```
+
+**观察：** 第二次先指出采样率问题。这个函数检查三个参数，不会真正转换音频，也不检查文件损坏、时长和内容；调用时应使用实际读取到的值。
+
+### 9. 耗时测量：知道一次调用用了多久
+
+`perf_counter()` 用来测量一段操作的耗时。开始前记一次时间，结束后再记一次，两次相减就是经过的秒数。
+
+```python
+from time import perf_counter
+
+started = perf_counter()
+# 用一小段普通计算练习计时；这里没有进行模型推理。
+value = sum(range(10000))
+elapsed = perf_counter() - started
+
+print("计算结果：", value)
+print(f"本次调用耗时：{elapsed:.6f} 秒")
+```
+
+**注释：** 每次测量数值可能不同。记录模型时要分清加载耗时、单段推理耗时和整个流程等待时间，不把普通计算的耗时当作 ASR 性能。
+
+### 10. 结果对照：把录音内容与识别文字放在一起看
+
+准备一份录音说了什么，再记录实际识别文字，可以帮助发现漏字、错字和标点差异。先会逐条对照，再学习正式的识别评估方法。
+
+```python
+cases = [
+    {"expected": "你好机器人", "actual": "你好机器人"},
+    {"expected": "今天开始学习", "actual": "今天开始学"},
+]
+matched = 0
+for index, case in enumerate(cases, start=1):
+    same = case["expected"] == case["actual"]
+    matched += int(same)  # True 转成 1，False 转成 0
+    print(index, "原内容：", case["expected"], "识别：", case["actual"], "完全一致：", same)
+
+print("示例中逐字一致的条数：", matched, "/", len(cases))
+```
+
+**观察：** 一条完全一致，一条少了字。这只是两条演示文字的精确比较，不是模型的通用准确率；实际记录也要注明标点差异，不能为了匹配而手工改写模型结果。
+
 ## 三、组合示例：两次输入保留各自结果
 
 本例只演示结果组织和顺序调用，不读取录音或调用真实模型。
@@ -185,3 +262,5 @@ for result in results:
 
 - [Python：wave 音频文件](https://docs.python.org/3.10/library/wave.html)。
 - [Python：类与对象](https://docs.python.org/3.10/tutorial/classes.html)。
+- [Python：二进制采样读写](https://docs.python.org/3.10/library/struct.html)。
+- [Python：耗时测量](https://docs.python.org/3.10/library/time.html#time.perf_counter)。
