@@ -1,119 +1,76 @@
 # 第二次任务：AI 端侧工程师
 
-## 数据链路图：
+**任务名称：** 在已有 ai_asr 中完成真实模型、连续识别与环境验证。
 
-```text
-接口侧保存 WAV → /ai/process_audio 提交本段路径与来源信息
-  → AI 编排受理 → /ai/recognize_audio → 本地真实 ASR
-  → 保存同名文字、发布状态与识别结果 → 界面显示／查询
+**周期：** 第二周，5 个工作日；先看[共同安排](README.md)。
+
+**配套学习：** [第二周知识清单](../../知识点/第二周/AI%20端侧工程师｜第二周专业知识自学清单.md)。
+
+## 一、从哪里继续
+
+参考项目已有 `ai_asr` 的 ASRNode、FunAsrEngine 和结构化接口。默认模型为 `paraformer-zh`，可带 `fsmn-vad` 与 `ct-punc`。已有 ROS 联调采用固定结果，不能据此认定真实模型、性能或离线加载已通过。
+
+本周在 `ai_interaction_ws/src/ai_asr/` 继续；复用模型封装，不换成此文档仓库的 SenseVoiceSmall，也不训练模型。`ai_edge` 目前是后续扩展框架，不要求为了包名一致迁移已有识别实现。
+
+## 二、需要做的事情
+
+1. **建立可复现环境。** 记录可同时导入 rclpy 和 FunASR 的 Python、FunASR／torch／torchaudio 及硬件版本。在目标机验证后锁定直接与关键依赖，说明安装顺序；不复制其他机器全部 pip freeze，也不盲目升级已能运行的环境。
+2. **验证模型加载与复用。** 阅读[FunAsrEngine](https://github.com/RoboNeuxs/ros2-logistics-interaction/blob/b878b982a08bf2533292a2a6aa5ae8611c0e1b90/ai_interaction_ws/src/ai_asr/ai_asr/funasr_engine.py)，分别记录首次加载、首次推理和第二段推理耗时。预加载异常当前只写日志，服务仍可能出现；如需就绪提示必须增加真实依据，不能把服务可发现当模型就绪。
+3. **完成两段真实识别。** 使用接口岗交付的合规 WAV，同一 ASR 进程连续处理，保留原来源字段；成功必须为真实非空文字，不输出固定答案。保存可核对的实际文字和耗时记录，个人录音与运行结果受控交付。
+4. **验证离线依赖。** 主模型本地路径不意味着 VAD 和标点已离线可用；准备全部启用模型的本地位置，或明确禁用未准备项。按受控断网条件验证不下载即可加载，并说明测试模式与限制。
+5. **验证错误与恢复。** 覆盖静音、缺文件、错误采样率／声道、模型不可用。保持 RecognizedText 与阶段一致；`confidence=-1` 保留不可用，不填百分之百。当前错误码如 AUDIO_NOT_FOUND／INVALID_AUDIO_REQUEST／ASR_FAILED 按实际结果记录。
+6. **配合超时测试。** 当前 ASR 在服务回调同步推理，接口超时不取消模型。不得承诺已有并发队列和可响应查询；单请求测试，超时后先等待原终态或受控重启恢复。模型替身可用于可控超时，但单独标注，不能替代双真实录音。
+
+## 三、启动与验证
+
+优先由接口岗的统一 launch 启动 ASR 和转发，避免重复同名服务。按[共同安排](README.md)构建并加载工作空间后，本机复制 `interaction.yaml` 到受控配置位置，记录实际覆盖值；以下配置参数名来自当前参考项目：
+
+```yaml
+asr_node:
+  ros__parameters:
+    model_name: paraformer-zh
+    model_path: /absolute/path/to/paraformer-zh  # 本地主模型，不是此仓库的 SenseVoice
+    vad_model: /absolute/path/to/fsmn-vad       # 启用时也要准备本地资源
+    punc_model: /absolute/path/to/ct-punc
+    use_vad: true
+    use_punc: true
+    preload: true
+    device: cpu
+    max_audio_seconds: 300.0
+
+audio_interface_node:
+  ros__parameters:
+    recognition_timeout: 120.0  # 当前客户端等待预算；不等于服务端推理硬截止
 ```
 
-## 任务基本信息
-
-- **任务名称：** 把单段 ASR 接成可连续接收的 ROS 2 功能
-- **建议周期：** 第二周，5 个工作日；具体日程见[共同安排](README.md#三5-个工作日安排)
-- **运行位置：** PC 机 Linux 虚拟机，ROS 2 Humble，模型沿用第一次已验证环境
-- **岗位文件夹：** 沿用第一次 `~/ai_edge_engineer`；接入本项目时复用 `src/ai_edge`，模型与运行结果不入源码
-- **对接人员：** 组内接口调用工程师，由其统一协调可视化接入
-
-## 一、本次目标
-
-在已完成的单文件识别基础上，接收接口工程师每次交付的音频路径与来源标识，自动调用真实 ASR，发布本段状态和文字。一段处理结束后节点继续运行，下一段不需要重启节点或修改音频参数。
-
-交付物仍是可在 ROS 2 工作空间构建、通过 `ros2 run` 启动的功能包。本周复用现有模型和编排，不要求重新训练、更换 ASR 模型或开发新的通信系统。
-
-音频采集与文件传输归接口侧；本岗位负责模型所需预处理、模型运行、ASR 调用、识别状态判定和文字保存。只完成 ASR，设置 `enable_semantic:=false`，不把大模型、TTS、候选任务或机器人执行混入本次验收。
-
-## 二、数据与接口要求
-
-### 向接口工程师要什么数据
-
-获取至少两段不同内容的真实录音、对应的 WAV 路径和格式说明，以及 `request_id`、`session_id`、`segment_id`、`input_context_id` 和采集时间。可分别说“你好，机器人”和“查询当前状态”，也可现场说不同短句；这些是识别样例，不要求触发对应业务。
-
-读取实际 WAV 参数核对 16000 Hz、单声道、16 位。若收到不合规格式，按当前契约返回明确错误并向接口工程师反馈；模型额外转换和预处理由本岗位实现，不能只改扩展名或参数标记。
-
-### ROS 2 功能包与接口
-
-| 接口 | 本岗位职责 |
-|---|---|
-| `/ai/process_audio`，`ProcessAudio` | 接收完整来源信息和绝对路径，校验后返回 `receipt`，表示受理／拒绝 |
-| `/ai/recognize_audio`，`RecognizeAudio` | AI 编排内部调用；响应 `result` 为完整 `RecognizedText` |
-| `/ai/audio_state`，`AudioProcessingState` | 发布排队、等待 ASR、识别中和终态，带来源、进程序号及错误 |
-| `/ai/asr_text`，`RecognizedText` | 发布实际成功文字、无语音或失败，保持原来源标识 |
-| `/ai/request_status`，`RequestStatus` | 分阶段说明受理、识别及具体拒绝原因 |
-| `/ai/query_audio`，`QueryAudio` | 已知音频请求 ID 时提供当前进程快照 |
-| 部件状态与心跳 | 发布 ASR 加载、就绪、忙碌与故障；活性不冒充模型就绪 |
-
-完整类型与 QoS 见[共用接口清单](README.md#2-三方共用接口清单)。第一次练习中的 `std_srvs/srv/Trigger` 识别接口不再作为本周正式接口，不在同名服务下并存。
-
-### 状态与结果规则
-
-| 情况 | 必须给出的结果 |
-|---|---|
-| 合法任务进入队列 | 受理回执，不提前返回识别完成 |
-| 正在识别 | `RECOGNIZING`；模型推理不阻塞查询和其他 ROS 回调 |
-| 识别成功 | `RecognizedText.success=true`、`status=SUCCESS`、实际非空文字；编排终态为 `ASR_COMPLETED` |
-| 无有效语音 | `status=NO_SPEECH` 和对应原因；不生成成功文字 |
-| 文件、模型、格式或推理失败 | 明确失败、错误码与来源，不返回样例答案或旧文字 |
-
-`confidence=-1` 表示没有可信分数，不改成 100%。WAV 旁保存同名 `.txt`，只写真实成功文字；失败不生成成功文本，路径与来源 ID 可相互核对。本周不要求生成 `.parse.json`。
-
-阶段状态在变化时发布。`source_node`、`boot_id`、`event_seq` 用于区分乱序与重启；识别文字保留四个来源 ID 和采集／识别时间。队列与防重沿用现有实现：同一进程登记范围内完全相同的重复请求不再推理，同 ID 不同内容明确拒绝；重启或记录淘汰后的边界写入说明，不声称永久防重。
-
-### 构建、启动与调用示例
-
-以下假设本仓库位于 `~/ai-interaction-ui/src`。所有终端从工作空间根目录运行，先加载相同 ROS 环境和实际联调域。构建可由接口工程师统一执行：
+替换全部路径，配置文件保留本地；若本周禁用 VAD／标点，写清原因与对验收的影响。启动前在已验证的同一 Python 环境确认依赖：
 
 ```bash
-cd ~/ai-interaction-ui
-source /opt/ros/humble/setup.bash
-colcon build --packages-up-to ai_edge ai_interface --cmake-args -DAMENT_CMAKE_SYMLINK_INSTALL=OFF
-source install/setup.bash
-export ROS_DOMAIN_ID=71
-ros2 interface show robot_interfaces/srv/RecognizeAudio
+python3 -c "import rclpy, funasr, torch, torchaudio; print('imports OK')"
+ros2 launch interaction_interface interaction.launch.py config:=/absolute/path/interaction.local.yaml
 ```
 
-`71` 为示例域，须与设备、接收端和窗口的现场登记值一致。终端一启动真实 ASR，解释器和模型路径替换为第一次已验证的实际位置：
+收到 `/ai/asr_text` 后检查 `request_id`、`success`、`status`、`text`、`error_code`，并核对 `/interaction/asr_text` 内容一致。正式双录音走文件接收端，不在窗口另调一次 ASR。
+
+仓库已有逻辑测试可回归：
 
 ```bash
-ros2 run --prefix "$HOME/venvs/ros2_audio/bin/python" ai_edge asr_node --ros-args \
-  -p model_path:="$HOME/ai-interaction-ui/src/models/SenseVoiceSmall" \
-  -p audio_root:=received_audio -p recognition_timeout:=180.0
+# 参考项目根目录；该测试使用替身，不下载或验证真实模型
+python3 -m unittest discover -s tests -v
 ```
 
-若构建时所用 Python 已具备正确的 FunASR 依赖，可省略 `--prefix`。不要求重新下载模型，也不覆盖原有可用推理环境；记录实际模型和依赖版本，等待 ASR 部件状态就绪后再测试。
+WSL ROS 联调按参考项目 README 运行，测试环境可使用隔离 Domain 与 `ROS_LOCALHOST_ONLY=1`；这不能作为跨设备网络验证结论。
 
-终端二加载相同环境后启动 AI 编排：
+## 四、学习、提交与验收
 
-```bash
-ros2 run ai_edge audio_processing_node --ros-args \
-  -p audio_root:=received_audio -p enable_semantic:=false -p asr_timeout:=185.0
-```
+| 时间 | 知识点 | 项目产物 |
+|---|---|---|
+| 第 1 天 | 环境、模型依赖、实际音频 | 解释器与模型清单 |
+| 第 2 天 | 加载复用、结构化结果 | 真实单段识别与依赖锁定 |
+| 第 3 天 | 来源与耗时 | 两段连续真实文字 |
+| 第 4 天 | 静音、离线、失败、超时 | 实际异常与恢复记录 |
+| 第 5 天 | 可复现说明 | 模型环境和个人操作文档 |
 
-终端三分别监听，按 Ctrl+C 结束一个后查看下一个：
+提交《第二次任务_AI端侧工程师_操作步骤.md》及知识笔记，链接[联合记录](验收记录模板.md)。写清环境、模型资源、实际文字、失败原因、耗时、断网结果和未验证项，不把已有固定推理测试记作新实测。
 
-```bash
-ros2 topic echo /ai/audio_state robot_interfaces/msg/AudioProcessingState
-ros2 topic echo /ai/asr_text robot_interfaces/msg/RecognizedText
-ros2 param get /audio_processing_node enable_semantic
-```
-
-接口工程师启动接收和采集端，向 `/ai/process_audio` 提交真实任务；正式联合链路不由接口端或界面重复调用识别服务。正常应看到 `QUEUED → WAITING_ASR → RECOGNIZING → ASR_COMPLETED`、对应实际文字及同名 TXT。
-
-## 三、需要做的事情
-
-1. **核对第一次真实 ASR。** 记录模型、Python、依赖、文件格式和识别耗时，确认当前 ROS 服务使用自定义类型。第一天与接口工程师冻结路径、ID 和超时。
-2. **接入每次音频任务。** 请求本身携带确定的路径，不再依靠启动参数固定某个 WAV。先校验来源、目录范围和实际文件，再返回受理；推理在异步流程执行，保留有界队列。
-3. **发布和保存真实结果。** 连续识别两段不同实录，不改路径、不重启。受理、识别中、成功、无语音与失败分别给出清晰结果，由接口工程师交给窗口接入。
-4. **补齐错误与恢复。** 覆盖缺文件、不合规格式、无有效语音、模型未就绪／不可用、忙碌和等待超时。超时后不采纳迟到结果，也不在底层推理仍运行时无限追加新推理；依赖恢复或上一推理结束后可处理新录音。
-5. **验证防重与查询。** 重复提交同一合法请求不重复识别；冲突 ID 明确拒绝。推理期间查询可响应；未知 ID 返回未找到，不能把默认消息当真实排队。查询仅当前进程有效，重启恢复不编造历史。
-
-主要负责共同验收 W2-01～W2-07 中 ASR、队列、结果和查询部分。超时或忙碌可用可控测试服务／模型替身验证，但须标注，不能代替两段真实模型识别。
-
-## 四、提交与验收
-
-**最终提交一份《第二次任务_AI端侧工程师_操作步骤.md》。功能包代码、模型与环境说明、实际识别结果、运行截图、启动和异常测试记录纳入文档，配套结果提供受控附件位置。**
-
-每一步写清“执行什么、应看到什么、实际结果是什么”。至少记录两段录音的来源、四个关联 ID、文件路径、实际文字、状态变化、处理耗时及 TXT 位置；另附无语音、缺文件、格式、不可用、忙碌／超时、防重和查询的实际结果。模型、录音和运行结果不提交源码。
-
-**验收标准：** 验收人员按文档启动同一套节点，接口每次提交一段音频即可连续获得对应真实文字，不重启、不改输入参数；文字与录音基本一致，标点差异可接受。受理不等于完成，失败不伪造文字，迟到结果不覆盖新任务；错误消除后仍可识别下一段。已知请求可查询真实快照，无记录明确说明。本周终态为 ASR 完成，不依赖大模型运行。
+**通过条件：** 共同 W2-01～05、07 中 AI 相关项通过；两段真实录音在同一进程识别且来源对应，失败不伪造成功文字，恢复后新输入可用。断网加载与依赖锁定给出独立实际结论；未通过则保留待完成，不宣称具备离线交付能力。本周不实现 LLM、TTS、ProcessAudio 编排或 QueryAudio。
